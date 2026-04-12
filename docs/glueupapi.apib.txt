@@ -1,0 +1,4411 @@
+FORMAT: 1A
+HOST: https://api-demo-story.glueup.com/v2/
+
+# Glue Up API
+This is the Glue Up open API v2 document, it includes 4 business collections: 
++ User Collection
++ Event Collection
++ Subscription Collection
++ Membership Collection
+
+Click on any API, you can easily try out with your specific parameters.
+
+## Group API Request Structure
+### URI
+From Apiary console, we try out APIs on apidemo server. <b>Note</b> that in your integration code, please use the corresponding live server where your organization is on, with the public / private key we provided. Please do not test in Apiary with the keys of live server, otherwise unexpected errors will occur.
+
++ API integration server URI:
+    + https://api-demo-story.glueup.com/v2/
+
++ Live server URI:
+    + https://api-services.glueup.cn/v2/
+    + https://api-services.glueup.com/v2/
+    + https://api.glueup.ru/v2/
+
+### Header
+Here is an example of an API request header.
+
+```
+a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+token: WnComsVP_DTky7RUXWhwhDYSdcFfCeSv2UiFIAbqP0V1uuILmESL_0l6WVQqVWyamArQWz5IHOeo9UsSr9PV1I1SOrnPuoqU42Ul_EYFe2z12MzZIDlWjQ3H1TuLdujI
+```
+**Parameters - a**
+
+*a* is a required parameter in header for each API
++ *v*: 1.0 (client version)
++ *k*: springfield_demo (public key, change for the API account)
++ *ts*: 1382312423124 (timestamp of now)
++ *d*: 213213 (digest, a calculated string with following parameters)
+    * publicKey: springfield_demo (change for the proper API account)
+    * privateKey: MFwCAQACEADDpHP6QMQ9YDFqr/3N9EsCAwEAAQIPeUcOpglUHO5v5ZnRBu1RAggP+NdjEftxPQIIDD/CPCfRxCcCB3R7VlQt0JUCCAQQSvIGC9NVAggJiEGjTIKpjg== (change for the API account)
+    * requestMethod: GET / POST / PUT / DELETE (change for different API)
+    * version: 1.0 (client version)
+    * time: 1382312423124 (timestamp of now)
+
+Here is a sample code of generating parameter *d* (digest) in Java.
+
+```
+import org.joda.time.DateTime;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import org.apache.commons.codec.binary.Hex;
+
+public class Helper {
+    public static String getDigest(String publicKey, String privateKey, String requestMethod, String version) {
+        String result = null;
+        String ALGORITHM = "HmacSHA256";
+        long time = DateTime.now(DateTimeZone.UTC).getMillis();
+        StringBuffer baseString = new StringBuffer(requestMethod);
+        baseString.append(publicKey);
+        baseString.append(version);
+        baseString.append(nowAsDateTime().getMillis());
+        SecretKeySpec signingKey = new SecretKeySpec(privateKey.getBytes(), ALGORITHM);
+    
+        try {
+            Mac mac = Mac.getInstance(ALGORITHM);
+            mac.init(signingKey);
+            result = Hex.encodeHexString(mac.doFinal(baseString.toString().getBytes()));
+        }
+        catch ( Exception e ) {
+            log.error("Exception in getDigest()", e);
+            throw new RuntimeException(e);
+        }
+        return result;
+    }
+}
+```
+
+**Parameters - token**
++ *token* is a user session token returned by user login action, it's required by user related APIs.
+
+
+### Body
+
+Here is an example of a JSON-format body of an API request.
+```
+{
+    "projection": [],
+    "offset": 0, 
+    "limit": 5,
+    "order": {
+        "startDateTime": "desc", 
+        "title": "asc"
+    },
+    "filter": [
+        {
+            "projection":"name",
+            "operator":"eq",
+            "values": ["GlueUp"]
+        }
+    ],
+    "search": {
+        "fields":["givenName","familyName","emailAddress"],
+        "value":"Test",
+        "fullText":true
+    },
+    "order": {
+        "startDateTime": "asc"
+    },
+    "language": {
+        "code": "en"
+    }
+}
+```
+**Pagination**
++ Provide the offset and limit in order to retrieve a limited amount of items.
+
+**Order**
++ Let you order the requested list using the properties available.
++ You can add more properties to order with more criteria.
++ Specify the order by using either ASC or DESC.
+
+**Filter**
++ Let you filter the requested list using the properties available.
++ For each filters, you need to specify a valid projection, the wanted operator and the values as an array.
+
+**Search**
++ Let you search the requested list using the properties available.
+
+**List of available operators**
+
+  Operator             | Description          
+  -------------------- | ---------------------
+  eq                   | Equal                   
+  ne                   | Not equal 
+  gt                   | Greater than              
+  ge                   | Greater than or equal
+  lt                   | Less than
+  le                   | Less than or equal
+  lk                   | Like                   
+  nl                   | Not like
+  bl                   | Null                   
+  nb                   | Not null
+  st                   | Starts with                   
+  ed                   | Ends with
+  in                   | Is in                   
+  any                  | One of
+
+## Group API Response Structure
+
+### Body
+
+Here is an example of a JSON-format return of an API request. We will review each property and how to use them.
+
+```
+{
+    "code": 200, 
+    "data": {
+        "value": [
+            "..."
+        ], 
+        "errors": [
+            {
+                "code": -1000, 
+                "messages": [
+                    "Invalid email format."
+                ]
+            }
+        ], 
+        "warnings": [
+            {
+                "code": -2001, 
+                "messages": [
+                    "[collaboratorCategories] is not a projectable property"
+                ]
+            }
+        ], 
+        "metadata": {
+            "pagination": {
+                "total": 15
+            }
+        }
+    }
+}
+```
+
+**Code**
++ The code is the HTTP status code from the request.
++ It is use to provide a description on the result of the request.
+
+Common used HTTP Status Codes:
+
+  Code                 | Title                | Description                       
+  -------------------- | ---------------------| ----------------------------------
+  200                  | OK                   | Standard response for successful HTTP requests.      
+  201                  | Created              | The request has been fulfilled and resulted in a new resource being created.
+  400                  | Bad Request          | The request cannot be fulfilled due to bad syntax.
+  401                  | Unauthorized         | The request was a valid request, but the server is refusing to respond to it.
+  403                  | Forbidden            | The request was a valid request, but the server is refusing to respond to it. Unlike a 401 Unauthorized response, authenticating will make no difference.
+  404                  | Not Found            | The requested resource could not be found.
+  500                  | Internal Server Error| A generic error message, given when an unexpected condition was encountered and no more specific message is suitable.
+
+**Value**
++ "value" contains the content requested.
+
+**Errors**
++ If you receive “errors”, it indicate a failure.
++ It will contain an error code and a message to describe the problem.
+
+**Warnings**
++ If you receive “warnings”, it denotes a side-effect caused by the service that could potentially alter user experience, but it is not an indication of failure.
++ It will contain an error code and a message to describe the problem.
+
+**Metadata**
++ It contains the pagination count to know the total number of items for this specific request.
+
+
+
+## Group User Collection
+
+## Create an User [/user]
+
+### Create an User [POST]
+
+Create a new user and return a User Model. An error will be returned if an user with the same email already exist. If successful, you will receive the session token associated to this user in response.
+
+  Property      | Type                | Description                       | Notes
+  ------------- | --------------------| ----------------------------------| -------------
+  givenName     | string              | User's given name.                | 
+  familyName    | string              | User's family name.               | 
+  email         | string              | User's email.                     | 
+  passphrase    | string              | User's password.                  | The value should be md5().
+  language      | Reference Data Model| User's default language.          | Use the Reference Data Model format. Please see below.
+  isOrgOptin    | boolean             | User's opt in organization status.| 
+  
++ Request (application/json)
+
+    + Headers
+    
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            
+    + Body
+        
+            {
+                "givenName" : "Test",
+                "familyName" : "User",
+                "email" : {
+                    "value" : "test.user@glueup.com"
+                },
+                "passphrase" : {
+                    "value" :  "22d5ee6ad0a2f92f4c71c5006203adb6"
+                },
+                "language" : {
+                    "code" : "en"
+                },
+                "isOrgOptin" : true
+            }
+
++ Response 201 (application/json)
+
+    + Body
+    
+            {
+                "warnings": [],
+                "errors": [],
+                "value": {
+                    "id": 47876,
+                    "token": "zEp2XE5JnsmbeZe7OAcLnjoUah8EduIBkJG8p_cu5ypWlBGlER28PVZ1LTndrCAR3KwoO7FT8WnsFHKDHv4BZWs3ysGHa0whoUEtIbPjU1Qh6jHNbHusDrv5e_9Wk7PI",
+                    "expiry": 1564358400000,
+                    "userId": 45004,
+                    "organizationId": 2040,
+                    "brokerId": "springfield_demo"
+                }
+            }
+
+## Login & Logout [/user/session]
+
+### Login an User [POST]
+
+Login an existing user and receive the session token in response.
+
+  Property      | Type                | Description                       | Notes
+  ------------- | --------------------| ----------------------------------| -------------
+  email         | string              | User's email.                     | 
+  passphrase    | string              | User's password.                  | The value should be md5().
+  
++ Request (application/json)
+
+    + Headers
+    
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            
+    + Body
+        
+            {
+                "email" : {
+                    "value" : "test.user@glueup.com"
+                },
+                "passphrase" : {
+                    "value" :  "22d5ee6ad0a2f92f4c71c5006203adb6"
+                }
+            }
+
++ Response 200 (application/json)
+
+    + Body
+    
+            {
+                "warnings": [],
+                "errors": [],
+                "value": {
+                    "id": 47877,
+                    "token": "GMnTdo6uZAwuWuS3T4r4YGMvYrNhdZcVV0i5dmq5jsUmw2cdtCfdbpxSnBD6Zi7dNZlejLvJpRwsRMQ0qKRydXfqCSJGRYhmXZZ5B4KDfSuplaPxM_yduHNYVC8asXiz",
+                    "expiry": 1564358400000,
+                    "userId": 45004,
+                    "brokerId": "springfield_demo"
+                }
+            }
+
+### Logout an User [DELETE]
+
+Logout an user. Requires to have an active session.
+
++ Request (application/json)
+
+    + Headers
+    
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            token: fPuxUshGnhJhhuEme6ygfzFpBaDIU45Xa1l_3UgUgS3BE98u6p89O6FxdyEwetvclUbDGlDD9Nk4qT0FzMDDb4UP9ZTplmbd1BeaSh1berCPqdRhVaQoX5Q1IlUbmp2w
+            
++ Response 200 (application/json)
+
+    + Body
+    
+            {
+                "warnings": [],
+                "errors": []
+            }
+
+## User Snapshot [/user/snapshot/{language}]
+
+### Retrieve the User Snapshot [GET]
+
+The user snapshot will provide you all the user basic information bound to the current session. Requires to have an active session.
+
+
+  Property             | Type                | Description                       | Notes
+  -------------------- | --------------------| ----------------------------------| -------------
+  userId               | int                 | User's ID.                        | 
+  givenName            | string              | User's given name.                | 
+  familyName           | string              | User's family name.               | 
+  defaultLanguage      | Reference Data Model| User's default language.          | Use the Reference Data Model format. Please see below. 
+  defaultTimeZone      | Timezone Mode       | User's timezone.                  | Use the Timezone Model format. Please see below.
+  defaultProfilePicture| Document Model      | User's profile picture.           | Use the Document Model format. Please see below.
+  
++ Parameters
+    + language: en (optional, string) - Language code prefered of user snapshot. 
+
++ Request (application/json)
+
+    + Headers
+    
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            token: WnComsVP_DTky7RUXWhwhDYSdcFfCeSv2UiFIAbqP0V1uuILmESL_0l6WVQqVWyamArQWz5IHOeo9UsSr9PV1I1SOrnPuoqU42Ul_EYFe2z12MzZIDlWjQ3H1TuLdujI
+            
++ Response 200 (application/json)
+
+    + Body
+    
+            {
+                "warnings": [],
+                "errors": [],
+                "value": {
+                    "user": {
+                        "userId": 45004,
+                        "email": {
+                            "value": "test.user@glueup.com"
+                        },
+                        "givenName": "Test",
+                        "familyName": "User",
+                        "ebOptin": true,
+                        "verified": true
+                    },
+                    "account": {
+                        "defaultLanguage": {
+                            "code": "en"
+                        },
+                        "defaultTimeZone": {
+                            "gmtOffset": 0
+                        }
+                    },
+                    "defaultProfilePicture": {
+                        "descriptor": {
+                            "id": "d6bd3a93-6dcb-4f28-82e9-6295acdef62f",
+                            "uri": "/resources/public/images/square/::size::/d6bd3a93-6dcb-4f28-82e9-6295acdef62f.png"
+                        }
+                    },
+                    "myOrganizations": []
+                }
+            }
+
+
+
+## Redirect Token [/user/redirect/token?new_broker={newBroker}&timestamp={timestamp}&redirect_url={redirectUrl}]
+
+### Keep User logged in between website and Glue Up [GET]
+
+This endpoint will return a link. This link can be used to keep alive the current logged in user. Requires to have an active session.
+
++ Parameters
+    + newBroker: php_springfield_demo (required, string) - Broker string of the organization with 'php_'
+    + timestamp: 1539772539000 (required, timestamp) - Timestamp of now
+    + redirectUrl: /home (required, string) - Redirect url
+
++ Request (application/json)
+
+    + Headers
+    
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            token: WnComsVP_DTky7RUXWhwhDYSdcFfCeSv2UiFIAbqP0V1uuILmESL_0l6WVQqVWyamArQWz5IHOeo9UsSr9PV1I1SOrnPuoqU42Ul_EYFe2z12MzZIDlWjQ3H1TuLdujI
+            
++ Response 200 (application/json)
+
+    + Body
+    
+            {
+                "warnings": [],
+                "errors": [],
+                "value": {
+                    "redirect": "https://eb-service.glueup.com?token=ac981731-97cc-4ff7-ab6a-86093e920360&timestamp=1539772539000",
+                    "token": "ac981731-97cc-4ff7-ab6a-86093e920360"
+                }
+            }
+
+## Group Event Collection
+
+## Event List [/event/list]
+
+### Retrieve the Event List [POST]
+
+This endpoint is used to retrieve a list of Event Model that match the request requirements.
+
++ Request (application/json)
+
+    + Headers
+    
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+        
+    + Body
+        
+            {
+                "projection" : [ "id",
+                                "title",
+                                "subTitle",
+                                "summary",
+                                "language.code",
+                                "defaultLanguage.code",
+                                "startDateTime",
+                                "endDateTime",
+                                "venueInfo",
+                                "template"],
+                "limit" : 15,
+                "offset" : 0,
+                "filter" : [ 
+                    {
+                        "projection" : "published",
+                            "operator" : "eq",
+                            "values" : [ true ]
+                    },{
+                        "projection" : "openToPublic",
+                            "operator" : "eq",
+                            "values" : [ true ]
+                    } 
+                ],
+                "order" : {
+                    "startDateTime" : "asc"
+                },
+                "language" : {
+                    "code" : "en"
+                }
+            }
+           
++ Response 200 (application/json)
+
+    + Body
+
+            {
+                "warnings": [],
+                "errors": [],
+                "metadata": {
+                    "pagination": {
+                      "total": 1
+                    }
+                },
+                "value": [
+                    {
+                        "id": 7674,
+                        "language": {
+                            "code": "en"
+                        },
+                        "defaultLanguage": {
+                            "code": "en"
+                        },
+                        "title": "Summer Party",
+                        "startDateTime": 1563465601000,
+                        "endDateTime": 1564243201000,
+                        "venueInfo": {
+                            "timezone": "Asia/Shanghai",
+                            "name": "Chaoyang Park",
+                            "cityName": "Beijing",
+                            "country": {
+                              "code": "CN",
+                              "name": "China"
+                            },
+                            "map": {
+                              "latitude": 39.940146,
+                              "longitude": 116.481686,
+                              "zoom": 14
+                            }
+                        },
+                        "hasTemplate": false,
+                        "published": true,
+                        "template": {
+                            "id": "5d2d3272e4b0a236f1df0906",
+                            "duplicateTemplateId": "",
+                            "templateId": "eventify"
+                        }
+                    }
+                ]
+            }
+
+### Retrieve the Event List by Status [POST /event/list/{status}]
+
+This endpoint is used to retrieve a list of Event Model by *status*.
+
++ Parameters
+
+    + status: ongoing (required, string) - Status of event : upcoming / ongoing / past
+
++ Request (application/json)
+
+    + Headers
+    
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+        
+    + Body
+        
+            {
+                "projection" : [ "id",
+                                "title",
+                                "subTitle",
+                                "summary",
+                                "language.code",
+                                "startDateTime",
+                                "endDateTime",
+                                "venueInfo",
+                                "template"],
+                "limit" : 15,
+                "offset" : 0,
+                "filter" : [ 
+                    {
+                        "projection" : "published",
+                            "operator" : "eq",
+                            "values" : [ true ]
+                    },{
+                        "projection" : "openToPublic",
+                            "operator" : "eq",
+                            "values" : [ true ]
+                    } 
+                ],
+                "order" : {
+                    "startDateTime" : "asc"
+                },
+                "language" : {
+                    "code" : "en"
+                }
+            }
+           
++ Response 200 (application/json)
+
+    + Body
+
+            {
+                "warnings": [],
+                "errors": [],
+                "metadata": {
+                    "pagination": {
+                      "total": 1
+                    }
+                },
+                "value": [
+                    {
+                        "id": 7674,
+                        "language": {
+                            "code": "en"
+                        },
+                        "title": "Summer Party",
+                        "startDateTime": 1563465601000,
+                        "endDateTime": 1564243201000,
+                        "venueInfo": {
+                            "timezone": "Asia/Shanghai",
+                            "name": "Chaoyang Park",
+                            "cityName": "Beijing",
+                            "country": {
+                              "code": "CN",
+                              "name": "China"
+                            },
+                            "map": {
+                              "latitude": 39.940146,
+                              "longitude": 116.481686,
+                              "zoom": 14
+                            }
+                        },
+                        "hasTemplate": false,
+                        "published": true,
+                        "template": {
+                            "id": "5d2d3272e4b0a236f1df0906",
+                            "duplicateTemplateId": "",
+                            "templateId": "eventify"
+                        }
+                    }
+                ]
+            }
+
+## User Events [/my/event/attendee]
+
+### Retrieve the User Events [POST]
+Retrieve the list of events that the current user registered. Requires to have an active session. This endpoint will return a list of Event Model.
+
++ Request (application/json)
+    
+    + Headers
+        
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            token: zEp2XE5JnsmbeZe7OAcLnjoUah8EduIBkJG8p_cu5ypWlBGlER28PVZ1LTndrCAR3KwoO7FT8WnsFHKDHv4BZWs3ysGHa0whoUEtIbPjU1Qh6jHNbHusDrv5e_9Wk7PI
+    
+    + Body
+            
+            {
+                "projection": [  ],
+                "limit":20,
+                "offset":0,
+                "filter":
+                [
+                    {
+                        "projection":"organization.id",
+                        "operator":"eq",
+                        "values":[2040]
+                    }
+                ],
+                "order":{"status":"asc"}
+            }
+
++ Response 200 (application/json)
+
+    + Body
+    
+            {
+                "warnings": [],
+                "errors": [],
+                "metadata": {
+                    "pagination": {
+                        "total": 1
+                    }
+                },
+                "value": [
+                    {
+                        "id": 7674,
+                        "organization": {
+                            "id": 2040,
+                            "name": "OpenAPIIntegration"
+                        },
+                        "title": "Summer Party",
+                        "startDateTime": 1563465601000,
+                        "endDateTime": 1564243201000,
+                        "venueInfo": {
+                            "cityName": "Beijing",
+                            "country": {
+                                "code": "CN",
+                                "name": "China"
+                            },
+                            "map": {}
+                        },
+                        "isArchive": false,
+                        "published": true
+                    }
+                ]
+            }
+
+## Group Subscription Collection
+
+## User Subscriptions [/my/subscription/subjectSubscriptionList]
+
+### Retrieve the User Subscriptions [GET]
+
+Retrieve the list of email subscriptions that the current user have subscribed with an organization. Requires to have an active session. This endpoint will return a list of Subscription Model.
+
++ Request (application/json)
+    
+    + Headers
+        
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            token: zuXAGU3SYOqHN6K_GQVZDSqcy416vtoKGxSI0UV4ybPTwubhFasgLnMSrJrgsd9RXu82vvofC_uaeFoi3eLR8iVPZIV2J8cz8qfsN12tv2eLbBwYXR_lw0UEGI0EHuyi
+
++ Response 200 (application/json)
+
+            {
+                "warnings": [],
+                "errors": [],
+                "metadata": {
+                    "pagination": {
+                        "total": 1
+                    }
+                },
+                "value": [
+                    {
+                        "id": 3042,
+                        "name": "Latest Update",
+                        "description": "",
+                        "organizationId": 2040,
+                        "order": 1,
+                        "subscribed": false,
+                        "createdOn": "2019-07-22T07:09:56.000+0000",
+                        "memberOnly": false,
+                        "memberAutoSubscribe": true,
+                        "nonMemberAutoSubscribe": true,
+                        "userAutoSubscribe": true,
+                        "workingGroup": false,
+                        "gdprActivated": true,
+                        "private": false
+                    }
+                ]
+            }
+
+### Subscribe User to an Organization [PUT /subscription/subscribeList]
+
+Subscribe user to an organization with email address and name. If correct *listId* is given, then will subscribe user to the subject also.
+
++ Request (application/json)
+    
+    + Headers
+        
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            token: zuXAGU3SYOqHN6K_GQVZDSqcy416vtoKGxSI0UV4ybPTwubhFasgLnMSrJrgsd9RXu82vvofC_uaeFoi3eLR8iVPZIV2J8cz8qfsN12tv2eLbBwYXR_lw0UEGI0EHuyi
+    + Body
+            
+            {
+                "givenName":"Given",
+                "familyName":"Family",
+                "emailAddress":{
+                    "value":"email.put@here.com" 
+                },
+                "phoneNumber":{
+                    "value": "2343456"   //maximum 50
+                },
+                "notes":[{
+                    "note":"testetest"
+                }],
+                "organizationId": 2040,
+                "listId": 3042
+            }
+    
++ Response 200 (application/json)
+
+            {
+                "warnings": [],
+                "errors": [],
+                "value": {
+                    "organizationId": 2040,
+                    "id": 1000008,
+                    "listId": 3042,
+                    "givenName": "Given",
+                    "familyName": "Family",
+                    "emailAddress": {
+                        "value": "email.put@here.com"
+                    },
+                    "phoneNumber":{
+                        "value": "2343456"   
+                    },
+                    "notes":[{
+                        "note":"testetest"
+                    }],
+                    "subscribed": true
+                }
+            }
+
+### Subscribe User to Subjects [PUT /subscription/subscribeLists]
+
+Subscribe user to list of subjects with contact email address / name, and list of subject ids.
+
++ Request (application/json)
+    
+    + Headers
+        
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            token: zuXAGU3SYOqHN6K_GQVZDSqcy416vtoKGxSI0UV4ybPTwubhFasgLnMSrJrgsd9RXu82vvofC_uaeFoi3eLR8iVPZIV2J8cz8qfsN12tv2eLbBwYXR_lw0UEGI0EHuyi
+    + Body
+            
+            {
+                "contact": {
+                    "organizationId": 2040,
+                    "givenName": "Given",
+                    "familyName": "Family",
+                    "emailAddress": {
+                        "value":"email.put@here.com"
+                    }
+                },
+                "subscriptionListIds":[3042],
+                "sendNotice":false
+            }
+    
++ Response 200 (application/json)
+
+            {
+                "warnings": [],
+                "errors": [],
+                "value": {
+                    "organizationId": 2040,
+                    "id": 1000008,
+                    "givenName": "Given",
+                    "familyName": "Family",
+                    "emailAddress": {
+                        "value": "email.put@here.com"
+                    },
+                    "subscribed": true
+                }
+            }
+            
+## Group Membership Collection
+
+## Membership Directory Settings [/membershipDirectory/settings]
+
+### Retrieve the Membership Directory Settings [GET]
+
+Retrieve the membership directory settings of an organization. You will receive visibility information for each form field and enabled search field.
+
+  Property                  | Type                | Description                       | Notes
+  ------------------------- | --------------------| ----------------------------------| -------------
+  visibility                | Reference Data Model|                                   | 
+  individualFieldsVisibility| Reference Data Model| Individual’s field reference.     | 
+  corporateFieldsVisibility | Reference Data Model| Company’s field reference.        | 
+  individualSearchFilters   | Array               | Existing field name.              | 
+  corporateSearchFilters    | Array               | Existing field name.              | 
+
+
++ Request (application/json)
+    
+    + Headers
+        
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            requestOrganizationId: 533
+            
++ Response 200 (application/json)
+
+    + Body
+    
+            {
+                "warnings": [],
+                "errors": [],
+                "value": {
+                    "visibility": {
+                        "directory": "All",
+                        "company": "Show",
+                        "member": "All"
+                    },
+                    "individualFieldsVisibility": [
+                        {
+                            "key": "startDate",
+                            "visibility": "Public"
+                        },
+                        {
+                            "key": "image",
+                            "visibility": "Public"
+                        },
+                        {
+                            "key": "givenName",
+                            "visibility": "Public"
+                        },
+                        {
+                            "key": "familyName",
+                            "visibility": "Public"
+                        },
+                        {
+                            "key": "companyName",
+                            "visibility": "Public"
+                        },
+                        {
+                            "key": "positionTitle",
+                            "visibility": "Public"
+                        },
+                        {
+                            "key": "industryCode",
+                            "visibility": "Hidden"
+                        },
+                        {
+                            "key": "properties.food-preference",
+                            "visibility": "Member"
+                        }
+                    ],
+                    "corporateFieldsVisibility": [
+                        {
+                            "key": "startDate",
+                            "visibility": "Public"
+                        },
+                        {
+                            "key": "image",
+                            "visibility": "Hidden"
+                        },
+                        {
+                            "key": "name",
+                            "visibility": "Public"
+                        },
+                        {
+                            "key": "industryCode",
+                            "visibility": "Hidden"
+                        },
+                        {
+                            "key": "properties.linked_in_url",
+                            "visibility": "LoggedIn"
+                        }
+                    ],
+                    "individualSearchFilters": [
+                        "givenName",
+                        "familyName",
+                        "companyName"
+                    ],
+                    "corporateSearchFilters": [
+                        "name"
+                    ]
+                }
+            }
+
+## Membership Application Form [/public/membership/companyApplicationForm]
+
+### Retrieve Default Company Application Form [GET]
+
+Retrieve the default company membership type application form of an organization. This endpoint returns an array of company form items which are currently used in the form with listing sequence.
+
+
++ Request (application/json)
+    
+    + Headers
+        
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            
++ Response 200 (application/json)
+
+    + Body
+    
+            {
+                "warnings": [],
+                "errors": [],
+                "value": [
+                    {
+                        "id": "5d2d4685e4b0a236f1df0929",
+                        "key": "image",
+                        "type": "image",
+                        "isDefault": true,
+                        "createdOn": 0,
+                        "lastModified": 0
+                    },
+                    {
+                        "id": "5d2d4685e4b0a236f1df0925",
+                        "key": "name",
+                        "type": "text",
+                        "isDefault": true,
+                        "isMandatory": true,
+                        "createdOn": 0,
+                        "lastModified": 0
+                    },
+                    {
+                        "id": "5d356bc2e4b0c39666ac44d6",
+                        "key": "linked_in_url",
+                        "type": "url",
+                        "name": {
+                            "en": "LinkedIn URL"
+                        },
+                        "placeholder": {
+                            "en": ""
+                        },
+                        "subtype": "LK",
+                        "createdOn": 0,
+                        "lastModified": 0
+                    }
+                ]
+            }            
+
+### Retrieve Default Individual Application Form [GET /public/membership/individualApplicationForm]
+
+Retrieve the default individual membership type application form of an organization. This endpoint returns an array of individual form items which are currently used in the form with listing sequence.
+
+
++ Request (application/json)
+    
+    + Headers
+        
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            
++ Response 200 (application/json)
+
+    + Body
+    
+            {
+                "warnings": [],
+                "errors": [],
+                "value": [
+                    {
+                        "id": "5d2c4298e4b049c81150d5d7",
+                        "key": "image",
+                        "type": "image",
+                        "isDefault": true,
+                        "createdOn": 0,
+                        "lastModified": 0
+                    },
+                    {
+                        "id": "5d2c4298e4b049c81150d5d1",
+                        "key": "givenName",
+                        "type": "text",
+                        "isDefault": true,
+                        "isMandatory": true,
+                        "createdOn": 0,
+                        "lastModified": 0
+                    },
+                    {
+                        "id": "5d2c4298e4b049c81150d5d2",
+                        "key": "familyName",
+                        "type": "text",
+                        "isDefault": true,
+                        "isMandatory": true,
+                        "createdOn": 0,
+                        "lastModified": 0
+                    },
+                    {
+                        "id": "5d2c4298e4b049c81150d5d3",
+                        "key": "emailAddress",
+                        "type": "email",
+                        "isDefault": true,
+                        "isMandatory": true,
+                        "createdOn": 0,
+                        "lastModified": 0
+                    },
+                    {
+                        "id": "5d2c4298e4b049c81150d5d4",
+                        "key": "phoneNumber",
+                        "type": "tel",
+                        "isDefault": true,
+                        "createdOn": 0,
+                        "lastModified": 0
+                    },
+                    {
+                        "id": "5d2c4298e4b049c81150d5d5",
+                        "key": "companyName",
+                        "type": "text",
+                        "isDefault": true,
+                        "createdOn": 0,
+                        "lastModified": 0
+                    },
+                    {
+                        "id": "5d2c4298e4b049c81150d5d6",
+                        "key": "positionTitle",
+                        "type": "text",
+                        "isDefault": true,
+                        "createdOn": 0,
+                        "lastModified": 0
+                    },
+                    {
+                        "id": "5d357297e4b0c39666ac44d8",
+                        "key": "food-preference",
+                        "type": "single_choice",
+                        "name": {
+                            "en": "Food Preference"
+                        },
+                        "placeholder": {
+                            "en": "What's your food preference?"
+                        },
+                        "options": [
+                            {
+                                "code": "vegetarian",
+                                "title": {
+                                    "en": "Vegetarian"
+                                }
+                            },
+                            {
+                                "code": "qingzhen",
+                                "title": {
+                                    "en": "Qingzhen"
+                                }
+                            },
+                            {
+                                "code": "meat",
+                                "title": {
+                                    "en": "Meat"
+                                }
+                            },
+                            {
+                                "code": "other-ed2b461e",
+                                "title": {
+                                    "en": "Other"
+                                },
+                                "isOther": true
+                            }
+                        ],
+                        "subtype": "radio",
+                        "hasOtherOption": true,
+                        "isOtherMandatory": false,
+                        "createdOn": 0,
+                        "lastModified": 0
+                    },
+                    {
+                        "id": "5d3571f6e4b0c39666ac44d7",
+                        "key": "graduated-school",
+                        "type": "text",
+                        "name": {
+                            "en": "Graduated School"
+                        },
+                        "placeholder": {
+                            "en": ""
+                        },
+                        "createdOn": 0,
+                        "lastModified": 0
+                    }
+                ]
+            }    
+            
+### Retrieve All Company Application Forms [POST /public/membership/companyApplicationForms]
+
+Retrieve the all company membership type application forms of an organization, including custom ones. This endpoint returns an array of company application forms, from which, each form contains items that are currently used in the form with listing sequence.
+
++ Request (application/json)
+    
+    + Headers
+        
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            
+    + Body
+            
+            {
+                "warnings": [],
+                "errors": [],
+                "metadata": {
+                    "pagination": {
+                        "total": 1
+                    }
+                },
+                "value": [
+                    {
+                        "id": "5c52e7880cf29ec146529a32",
+                        "organizationId": 141,
+                        "fields": [
+                            {
+                                "id": "5c52e7800cf29ec146529a28",
+                                "key": "image",
+                                "type": "image",
+                                "isDefault": true,
+                                "createdOn": 1548937088537,
+                                "lastModified": 1548937088537
+                            },
+                            {
+                                "id": "5c52e7800cf29ec146529a24",
+                                "key": "name",
+                                "type": "text",
+                                "isDefault": true,
+                                "isMandatory": true,
+                                "isFullWidth": false,
+                                "createdOn": 1548937088537,
+                                "lastModified": 1548937088537
+                            },
+                            {
+                                "id": "5c52e7800cf29ec146529a2f",
+                                "key": "industry",
+                                "type": "single_choice",
+                                "isDefault": true,
+                                "createdOn": 1548937088537,
+                                "lastModified": 1548937088537
+                            },
+                            {
+                                "id": "5d93fa9de4b0758f9b17dcd7",
+                                "key": "c",
+                                "type": "single_choice",
+                                "name": {
+                                    "en": "Industry field"
+                                },
+                                "placeholder": {
+                                    "en": "Industry field"
+                                },
+                                "options": [
+                                    {
+                                        "code": "real-estate",
+                                        "title": {
+                                            "en": "Real Estate"
+                                        }
+                                    },
+                                    {
+                                        "code": "manufacturing",
+                                        "title": {
+                                            "en": "Manufacturing"
+                                        }
+                                    },
+                                    {
+                                        "code": "it",
+                                        "title": {
+                                            "en": "IT"
+                                        }
+                                    },
+                                    {
+                                        "code": "construction",
+                                        "title": {
+                                            "en": "Construction"
+                                        }
+                                    },
+                                    {
+                                        "code": "retail",
+                                        "title": {
+                                            "en": "Retail"
+                                        }
+                                    },
+                                    {
+                                        "code": "finance",
+                                        "title": {
+                                            "en": "Finance"
+                                        }
+                                    },
+                                    {
+                                        "code": "automotive",
+                                        "title": {
+                                            "en": "Automotive"
+                                        }
+                                    },
+                                    {
+                                        "code": "pharma",
+                                        "title": {
+                                            "en": "Pharma"
+                                        }
+                                    },
+                                    {
+                                        "code": "other-4a8a08f0",
+                                        "title": {
+                                            "en": "Other"
+                                        },
+                                        "isOther": true
+                                    }
+                                ],
+                                "subtype": "select",
+                                "hasOtherOption": true,
+                                "isOtherMandatory": false,
+                                "createdOn": 1569979037219,
+                                "lastModified": 1569979774552
+                            },
+                            {
+                                "id": "5d94487be4b0758f9b17de03",
+                                "key": "membership-type",
+                                "type": "text",
+                                "name": {
+                                    "en": "Membership Type"
+                                },
+                                "placeholder": {
+                                    "en": ""
+                                },
+                                "createdOn": 1569998971566,
+                                "lastModified": 1569998971566
+                            },
+                            {
+                                "id": "5c52e7800cf29ec146529a25",
+                                "key": "phoneNumber",
+                                "type": "tel",
+                                "isDefault": true,
+                                "createdOn": 1548937088537,
+                                "lastModified": 1548937088537
+                            },
+                            {
+                                "id": "5c52e7800cf29ec146529a2b",
+                                "key": "address.cityName",
+                                "type": "text",
+                                "isDefault": true,
+                                "createdOn": 1548937088537,
+                                "lastModified": 1548937088537
+                            },
+                            {
+                                "id": "5c52e7800cf29ec146529a2c",
+                                "key": "address.province",
+                                "type": "text",
+                                "isDefault": true,
+                                "createdOn": 1548937088537,
+                                "lastModified": 1548937088537
+                            },
+                            {
+                                "id": "5c52e7800cf29ec146529a2d",
+                                "key": "address.zipCode",
+                                "type": "text",
+                                "isDefault": true,
+                                "createdOn": 1548937088537,
+                                "lastModified": 1548937088537
+                            },
+                            {
+                                "id": "5c52e7800cf29ec146529a26",
+                                "key": "emailAddress",
+                                "type": "email",
+                                "isDefault": true,
+                                "createdOn": 1548937088537,
+                                "lastModified": 1548937088537
+                            },
+                            {
+                                "id": "5d93fb7ce4b0758f9b17dcd9",
+                                "key": "Web",
+                                "type": "url",
+                                "name": {
+                                    "en": "Website"
+                                },
+                                "placeholder": {
+                                    "en": ""
+                                },
+                                "subtype": "LK",
+                                "createdOn": 1569979260311,
+                                "lastModified": 1569979260311
+                            },
+                            {
+                                "id": "6012e131e4b0f462c5225649",
+                                "key": "title-e9mw86sn",
+                                "type": "title",
+                                "name": {
+                                    "en": "TELL US ABOUT YOUR BUSINESS"
+                                },
+                                "isPrivate": false,
+                                "createdOn": 1611850033988,
+                                "lastModified": 1611857067989
+                            },
+                            {
+                                "id": "6012e157e4b0f462c522564a",
+                                "key": "business-type",
+                                "type": "text",
+                                "name": {
+                                    "en": "Business Type"
+                                },
+                                "placeholder": {
+                                    "en": "Business Type"
+                                },
+                                "createdOn": 1611850071900,
+                                "lastModified": 1611850305129
+                            },
+                            {
+                                "id": "6012e16de4b0f462c522564b",
+                                "key": "no-of-employees",
+                                "type": "number",
+                                "name": {
+                                    "en": "No of employees"
+                                },
+                                "placeholder": {
+                                    "en": ""
+                                },
+                                "createdOn": 1611850093174,
+                                "lastModified": 1611850093174
+                            },
+                            {
+                                "id": "6012e186e4b0f462c522564c",
+                                "key": "industry-sector",
+                                "type": "text",
+                                "name": {
+                                    "en": "Industry Sector"
+                                },
+                                "placeholder": {
+                                    "en": ""
+                                },
+                                "createdOn": 1611850118592,
+                                "lastModified": 1611850118592
+                            },
+                            {
+                                "id": "5e253c95e4b0c6d34f6762b6",
+                                "key": "how-did-you-know-our-membershi",
+                                "type": "multiple_choice",
+                                "name": {
+                                    "en": "How did you know our Membership"
+                                },
+                                "placeholder": {
+                                    "en": "How did you know our Membership?"
+                                },
+                                "options": [
+                                    {
+                                        "code": "internet",
+                                        "title": {
+                                            "en": "Internet"
+                                        }
+                                    },
+                                    {
+                                        "code": "email",
+                                        "title": {
+                                            "en": "Email"
+                                        }
+                                    },
+                                    {
+                                        "code": "referrer",
+                                        "title": {
+                                            "en": "Referrer"
+                                        }
+                                    },
+                                    {
+                                        "code": "tv",
+                                        "title": {
+                                            "en": "TV"
+                                        }
+                                    },
+                                    {
+                                        "code": "ads",
+                                        "title": {
+                                            "en": "Ads"
+                                        }
+                                    },
+                                    {
+                                        "code": "other-345b8bb0",
+                                        "title": {
+                                            "en": "Other"
+                                        },
+                                        "isOther": true
+                                    }
+                                ],
+                                "subtype": "checkbox",
+                                "hasOtherOption": true,
+                                "isOtherMandatory": false,
+                                "createdOn": 1579498645623,
+                                "lastModified": 1579498645623
+                            }
+                        ],
+                        "isCustom": false
+                    }
+                ]
+            }
+            
++ Response 200 (application/json)
+
+  + Body
+  
+          {}
+
+
+
+### Retrieve All Individual Application Forms [POST /public/membership/individualApplicationForms]
+         
+Retrieve the all individual membership type application forms of an organization, including custom ones. This endpoint returns an array of individual application forms, from which, each form contains items that are currently used in the form with listing sequence.
+
++ Request (application/json)
+    
+    + Headers
+        
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            
+    + Body
+            
+            {}
+            
++ Response 200 (application/json)
+
+  + Body
+  
+          {
+                "warnings": [],
+                "errors": [],
+                "metadata": {
+                    "pagination": {
+                        "total": 3
+                    }
+                },
+                "value": [
+                    {
+                        "id": "5c52e7880cf29ec146529a31",
+                        "organizationId": 141,
+                        "fields": [
+                            {
+                                "id": "5c52e7120cf29ec146529a0e",
+                                "key": "image",
+                                "type": "image",
+                                "isDefault": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a08",
+                                "key": "givenName",
+                                "type": "text",
+                                "isDefault": true,
+                                "isMandatory": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a09",
+                                "key": "familyName",
+                                "type": "text",
+                                "isDefault": true,
+                                "isMandatory": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a0a",
+                                "key": "emailAddress",
+                                "type": "email",
+                                "isDefault": true,
+                                "isMandatory": true,
+                                "isFullWidth": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "6012cc3fe4b0f462c5225646",
+                                "key": "title-uonwgaaa",
+                                "type": "title",
+                                "name": {
+                                    "en": "Please fill in your individual information"
+                                },
+                                "isPrivate": false,
+                                "createdOn": 1611844671755,
+                                "lastModified": 1640075439601
+                            },
+                            {
+                                "id": "609367a5e4b03638f62558b3",
+                                "key": "testpicker",
+                                "type": "date",
+                                "name": {
+                                    "en": "TestPicker"
+                                },
+                                "placeholder": {
+                                    "en": "picker"
+                                },
+                                "createdOn": 1620273061232,
+                                "lastModified": 1620273061232
+                            },
+                            {
+                                "id": "5df87760e4b00780cee01c70",
+                                "key": "badge",
+                                "type": "cascading_selection",
+                                "name": {
+                                    "en": "Industry"
+                                },
+                                "options": [
+                                    {
+                                        "code": "id_0",
+                                        "title": {
+                                            "en": "Geoscience"
+                                        },
+                                        "hasOtherOption": true,
+                                        "isOtherMandatory": false,
+                                        "options": [
+                                            {
+                                                "code": "id_0_0",
+                                                "title": {
+                                                    "en": "Thermal"
+                                                }
+                                            },
+                                            {
+                                                "code": "id_0_1",
+                                                "title": {
+                                                    "en": "Hydrualic"
+                                                }
+                                            },
+                                            {
+                                                "code": "other-8744b222",
+                                                "title": {
+                                                    "en": "Other"
+                                                },
+                                                "isOther": true
+                                            }
+                                        ]
+                                    },
+                                    {
+                                        "code": "id_1",
+                                        "title": {
+                                            "en": "Medicine"
+                                        },
+                                        "placeholder": {
+                                            "en": "External"
+                                        },
+                                        "hasOtherOption": true,
+                                        "isOtherMandatory": false,
+                                        "options": [
+                                            {
+                                                "code": "id_1_0",
+                                                "title": {
+                                                    "en": "Internal"
+                                                }
+                                            },
+                                            {
+                                                "code": "other-df72b8d0",
+                                                "title": {
+                                                    "en": "Other"
+                                                },
+                                                "isOther": true
+                                            }
+                                        ]
+                                    },
+                                    {
+                                        "code": "id_2",
+                                        "title": {
+                                            "en": "Health"
+                                        }
+                                    }
+                                ],
+                                "subtype": "select",
+                                "hasOtherOption": false,
+                                "isOtherMandatory": false,
+                                "createdOn": 1576564576752,
+                                "lastModified": 1576564576752
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a13",
+                                "key": "address.country",
+                                "type": "single_choice",
+                                "isDefault": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a0d",
+                                "key": "positionTitle",
+                                "type": "text",
+                                "isDefault": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a0b",
+                                "key": "phoneNumber",
+                                "type": "tel",
+                                "isDefault": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a12",
+                                "key": "address.cityName",
+                                "type": "text",
+                                "isDefault": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "6012ca66e4b0f462c5225642",
+                                "key": "state",
+                                "type": "text",
+                                "name": {
+                                    "en": "State"
+                                },
+                                "placeholder": {
+                                    "en": ""
+                                },
+                                "createdOn": 1611844198929,
+                                "lastModified": 1611844198929
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a11",
+                                "key": "address.zipCode",
+                                "type": "text",
+                                "isDefault": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "6012caa7e4b0f462c5225643",
+                                "key": "facebook-page",
+                                "type": "url",
+                                "name": {
+                                    "en": "Facebook Page"
+                                },
+                                "placeholder": {
+                                    "en": ""
+                                },
+                                "createdOn": 1611844263910,
+                                "lastModified": 1611844263910
+                            },
+                            {
+                                "id": "6012cae1e4b0f462c5225645",
+                                "key": "instagram-handle",
+                                "type": "url",
+                                "name": {
+                                    "en": "Instagram Handle"
+                                },
+                                "placeholder": {
+                                    "en": ""
+                                },
+                                "createdOn": 1611844321524,
+                                "lastModified": 1611844321524
+                            },
+                            {
+                                "id": "6012cac0e4b0f462c5225644",
+                                "key": "twitter-handle",
+                                "type": "url",
+                                "name": {
+                                    "en": "Twitter Handle"
+                                },
+                                "placeholder": {
+                                    "en": ""
+                                },
+                                "createdOn": 1611844288731,
+                                "lastModified": 1611844288731
+                            },
+                            {
+                                "id": "5d91cf9ee4b0758f9b17dc30",
+                                "key": "Age",
+                                "type": "text",
+                                "name": {
+                                    "en": "Age"
+                                },
+                                "placeholder": {
+                                    "en": ""
+                                },
+                                "createdOn": 1569836958173,
+                                "lastModified": 1569836958173
+                            }
+                        ],
+                        "isCustom": false,
+                        "lastModified": 1638510484764,
+                        "lastModifiedBy": 43812
+                    },
+                    {
+                        "id": "61c190a8e4b020b033c3be31",
+                        "organizationId": 141,
+                        "fields": [
+                            {
+                                "id": "5c52e7120cf29ec146529a0e",
+                                "key": "image",
+                                "type": "image",
+                                "isDefault": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a08",
+                                "key": "givenName",
+                                "type": "text",
+                                "isDefault": true,
+                                "isMandatory": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a09",
+                                "key": "familyName",
+                                "type": "text",
+                                "isDefault": true,
+                                "isMandatory": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a0a",
+                                "key": "emailAddress",
+                                "type": "email",
+                                "isDefault": true,
+                                "isMandatory": true,
+                                "isFullWidth": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "6012cc3fe4b0f462c5225646",
+                                "key": "title-uonwgaaa",
+                                "type": "title",
+                                "name": {
+                                    "en": "Please fill in your individual information"
+                                },
+                                "createdOn": 1611844671755,
+                                "lastModified": 1640075439601
+                            },
+                            {
+                                "id": "609367a5e4b03638f62558b3",
+                                "key": "testpicker",
+                                "type": "date",
+                                "name": {
+                                    "en": "TestPicker"
+                                },
+                                "placeholder": {
+                                    "en": "picker"
+                                },
+                                "createdOn": 1620273061232,
+                                "lastModified": 1620273061232
+                            },
+                            {
+                                "id": "5df87760e4b00780cee01c70",
+                                "key": "badge",
+                                "type": "cascading_selection",
+                                "name": {
+                                    "en": "Industry"
+                                },
+                                "options": [
+                                    {
+                                        "code": "id_0",
+                                        "title": {
+                                            "en": "Geoscience"
+                                        },
+                                        "hasOtherOption": true,
+                                        "isOtherMandatory": false,
+                                        "options": [
+                                            {
+                                                "code": "id_0_0",
+                                                "title": {
+                                                    "en": "Thermal"
+                                                }
+                                            },
+                                            {
+                                                "code": "id_0_1",
+                                                "title": {
+                                                    "en": "Hydrualic"
+                                                }
+                                            },
+                                            {
+                                                "code": "other-8744b222",
+                                                "title": {
+                                                    "en": "Other"
+                                                },
+                                                "isOther": true
+                                            }
+                                        ]
+                                    },
+                                    {
+                                        "code": "id_1",
+                                        "title": {
+                                            "en": "Medicine"
+                                        },
+                                        "placeholder": {
+                                            "en": "External"
+                                        },
+                                        "hasOtherOption": true,
+                                        "isOtherMandatory": false,
+                                        "options": [
+                                            {
+                                                "code": "id_1_0",
+                                                "title": {
+                                                    "en": "Internal"
+                                                }
+                                            },
+                                            {
+                                                "code": "other-df72b8d0",
+                                                "title": {
+                                                    "en": "Other"
+                                                },
+                                                "isOther": true
+                                            }
+                                        ]
+                                    },
+                                    {
+                                        "code": "id_2",
+                                        "title": {
+                                            "en": "Health"
+                                        }
+                                    }
+                                ],
+                                "subtype": "select",
+                                "hasOtherOption": false,
+                                "isOtherMandatory": false,
+                                "createdOn": 1576564576752,
+                                "lastModified": 1576564576752
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a13",
+                                "key": "address.country",
+                                "type": "single_choice",
+                                "isDefault": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a0d",
+                                "key": "positionTitle",
+                                "type": "text",
+                                "isDefault": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a0b",
+                                "key": "phoneNumber",
+                                "type": "tel",
+                                "isDefault": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a12",
+                                "key": "address.cityName",
+                                "type": "text",
+                                "isDefault": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "6012ca66e4b0f462c5225642",
+                                "key": "state",
+                                "type": "text",
+                                "name": {
+                                    "en": "State"
+                                },
+                                "placeholder": {
+                                    "en": ""
+                                },
+                                "createdOn": 1611844198929,
+                                "lastModified": 1611844198929
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a11",
+                                "key": "address.zipCode",
+                                "type": "text",
+                                "isDefault": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "6012caa7e4b0f462c5225643",
+                                "key": "facebook-page",
+                                "type": "url",
+                                "name": {
+                                    "en": "Facebook Page"
+                                },
+                                "placeholder": {
+                                    "en": ""
+                                },
+                                "createdOn": 1611844263910,
+                                "lastModified": 1611844263910
+                            },
+                            {
+                                "id": "6012cae1e4b0f462c5225645",
+                                "key": "instagram-handle",
+                                "type": "url",
+                                "name": {
+                                    "en": "Instagram Handle"
+                                },
+                                "placeholder": {
+                                    "en": ""
+                                },
+                                "createdOn": 1611844321524,
+                                "lastModified": 1611844321524
+                            },
+                            {
+                                "id": "6012cac0e4b0f462c5225644",
+                                "key": "twitter-handle",
+                                "type": "url",
+                                "name": {
+                                    "en": "Twitter Handle"
+                                },
+                                "placeholder": {
+                                    "en": ""
+                                },
+                                "createdOn": 1611844288731,
+                                "lastModified": 1611844288731
+                            },
+                            {
+                                "id": "5d91cf9ee4b0758f9b17dc30",
+                                "key": "Age",
+                                "type": "text",
+                                "name": {
+                                    "en": "Age"
+                                },
+                                "placeholder": {
+                                    "en": ""
+                                },
+                                "createdOn": 1569836958173,
+                                "lastModified": 1569836958173
+                            }
+                        ],
+                        "isCustom": true,
+                        "title": {
+                            "en": "custom form 1"
+                        },
+                        "types": [
+                            {
+                                "id": 790
+                            }
+                        ],
+                        "createdOn": 1640075432575,
+                        "createdBy": 37589,
+                        "lastModified": 1640075439638,
+                        "lastModifiedBy": 37589
+                    },
+                    {
+                        "id": "6220bc34e4b0e4bf4421d5fc",
+                        "organizationId": 141,
+                        "fields": [
+                            {
+                                "id": "5c52e7120cf29ec146529a0e",
+                                "key": "image",
+                                "type": "image",
+                                "isDefault": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a08",
+                                "key": "givenName",
+                                "type": "text",
+                                "isDefault": true,
+                                "isMandatory": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a09",
+                                "key": "familyName",
+                                "type": "text",
+                                "isDefault": true,
+                                "isMandatory": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a0a",
+                                "key": "emailAddress",
+                                "type": "email",
+                                "isDefault": true,
+                                "isMandatory": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "6012cc3fe4b0f462c5225646",
+                                "key": "title-uonwgaaa",
+                                "type": "title",
+                                "name": {
+                                    "en": "Please fill in your individual information"
+                                },
+                                "createdOn": 1611844671755,
+                                "lastModified": 1640075439601
+                            },
+                            {
+                                "id": "609367a5e4b03638f62558b3",
+                                "key": "testpicker",
+                                "type": "date",
+                                "name": {
+                                    "en": "TestPicker"
+                                },
+                                "placeholder": {
+                                    "en": "picker"
+                                },
+                                "createdOn": 1620273061232,
+                                "lastModified": 1620273061232
+                            },
+                            {
+                                "id": "5df87760e4b00780cee01c70",
+                                "key": "badge",
+                                "type": "cascading_selection",
+                                "name": {
+                                    "en": "Industry"
+                                },
+                                "options": [
+                                    {
+                                        "code": "id_0",
+                                        "title": {
+                                            "en": "Geoscience"
+                                        },
+                                        "hasOtherOption": true,
+                                        "isOtherMandatory": false,
+                                        "options": [
+                                            {
+                                                "code": "id_0_0",
+                                                "title": {
+                                                    "en": "Thermal"
+                                                }
+                                            },
+                                            {
+                                                "code": "id_0_1",
+                                                "title": {
+                                                    "en": "Hydrualic"
+                                                }
+                                            },
+                                            {
+                                                "code": "other-8744b222",
+                                                "title": {
+                                                    "en": "Other"
+                                                },
+                                                "isOther": true
+                                            }
+                                        ]
+                                    },
+                                    {
+                                        "code": "id_1",
+                                        "title": {
+                                            "en": "Medicine"
+                                        },
+                                        "placeholder": {
+                                            "en": "External"
+                                        },
+                                        "hasOtherOption": true,
+                                        "isOtherMandatory": false,
+                                        "options": [
+                                            {
+                                                "code": "id_1_0",
+                                                "title": {
+                                                    "en": "Internal"
+                                                }
+                                            },
+                                            {
+                                                "code": "other-df72b8d0",
+                                                "title": {
+                                                    "en": "Other"
+                                                },
+                                                "isOther": true
+                                            }
+                                        ]
+                                    },
+                                    {
+                                        "code": "id_2",
+                                        "title": {
+                                            "en": "Health"
+                                        }
+                                    }
+                                ],
+                                "subtype": "select",
+                                "hasOtherOption": false,
+                                "isOtherMandatory": false,
+                                "createdOn": 1576564576752,
+                                "lastModified": 1576564576752
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a13",
+                                "key": "address.country",
+                                "type": "single_choice",
+                                "isDefault": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a0d",
+                                "key": "positionTitle",
+                                "type": "text",
+                                "isDefault": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a0b",
+                                "key": "phoneNumber",
+                                "type": "tel",
+                                "isDefault": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a12",
+                                "key": "address.cityName",
+                                "type": "text",
+                                "isDefault": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "6012ca66e4b0f462c5225642",
+                                "key": "state",
+                                "type": "text",
+                                "name": {
+                                    "en": "State"
+                                },
+                                "placeholder": {
+                                    "en": ""
+                                },
+                                "createdOn": 1611844198929,
+                                "lastModified": 1611844198929
+                            },
+                            {
+                                "id": "5c52e7120cf29ec146529a11",
+                                "key": "address.zipCode",
+                                "type": "text",
+                                "isDefault": true,
+                                "createdOn": 1548936978232,
+                                "lastModified": 1548936978232
+                            },
+                            {
+                                "id": "6012caa7e4b0f462c5225643",
+                                "key": "facebook-page",
+                                "type": "url",
+                                "name": {
+                                    "en": "Facebook Page"
+                                },
+                                "placeholder": {
+                                    "en": ""
+                                },
+                                "createdOn": 1611844263910,
+                                "lastModified": 1611844263910
+                            },
+                            {
+                                "id": "6012cae1e4b0f462c5225645",
+                                "key": "instagram-handle",
+                                "type": "url",
+                                "name": {
+                                    "en": "Instagram Handle"
+                                },
+                                "placeholder": {
+                                    "en": ""
+                                },
+                                "createdOn": 1611844321524,
+                                "lastModified": 1611844321524
+                            },
+                            {
+                                "id": "6012cac0e4b0f462c5225644",
+                                "key": "twitter-handle",
+                                "type": "url",
+                                "name": {
+                                    "en": "Twitter Handle"
+                                },
+                                "placeholder": {
+                                    "en": ""
+                                },
+                                "createdOn": 1611844288731,
+                                "lastModified": 1611844288731
+                            },
+                            {
+                                "id": "5d91cf9ee4b0758f9b17dc30",
+                                "key": "Age",
+                                "type": "text",
+                                "name": {
+                                    "en": "Age"
+                                },
+                                "placeholder": {
+                                    "en": ""
+                                },
+                                "createdOn": 1569836958173,
+                                "lastModified": 1569836958173
+                            }
+                        ],
+                        "isCustom": true,
+                        "title": {
+                            "en": "test"
+                        },
+                        "createdOn": 1646312500699,
+                        "createdBy": 45035,
+                        "lastModified": 1646312500699,
+                        "lastModifiedBy": 45035
+                    }
+                ]
+            }
+            
+### Retrieve All Company Application Form Fields [GET /public/membership/companyApplicationFormFields]
+         
+Retrieve the all the fields of company membership type application forms of an organization, including those that belong to custom application forms. This endpoint returns an array of company application form fields.
+
++ Request (application/json)
+    
+    + Headers
+        
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            
++ Response 200 (application/json)
+
+    + Body
+    
+            {
+                "warnings": [],
+                "errors": [],
+                "value": [
+                    {
+                        "id": "6305829fe4b0b231a7e62836",
+                        "key": "image",
+                        "type": "image",
+                        "isDefault": true,
+                        "createdOn": 1661305503573,
+                        "lastModified": 1661305503573
+                    },
+                    {
+                        "id": "6305829fe4b0b231a7e62832",
+                        "key": "name",
+                        "type": "text",
+                        "isDefault": true,
+                        "createdOn": 1661305503573,
+                        "lastModified": 1661305503573
+                    },
+                    {
+                        "id": "6305829fe4b0b231a7e6283c",
+                        "key": "address.country",
+                        "type": "single_choice",
+                        "isDefault": true,
+                        "createdOn": 1661305503573,
+                        "lastModified": 1661305503573
+                    },
+                    {
+                        "id": "6305829fe4b0b231a7e62839",
+                        "key": "address.cityName",
+                        "type": "text",
+                        "isDefault": true,
+                        "createdOn": 1661305503573,
+                        "lastModified": 1661305503573
+                    },
+                    {
+                        "id": "6305829fe4b0b231a7e62833",
+                        "key": "phoneNumber",
+                        "type": "tel",
+                        "isDefault": true,
+                        "createdOn": 1661305503573,
+                        "lastModified": 1661305503573
+                    }
+                ]
+            }
+            
+            
+### Retrieve All Individual Application Form Fields [GET /public/membership/individualApplicationFormFields]
+         
+Retrieve the all the fields of individual membership type application forms of an organization, including those that belong to custom application forms. This endpoint returns an array of individual application form fields.
+
++ Request (application/json)
+    
+    + Headers
+        
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            
++ Response 200 (application/json)
+
+    + Body
+    
+            {
+                "warnings": [],
+                "errors": [],
+                "value": [
+                    {
+                        "id": "6305829fe4b0b231a7e62828",
+                        "key": "image",
+                        "type": "image",
+                        "isDefault": true,
+                        "createdOn": 1661305503552,
+                        "lastModified": 1661305503552
+                    },
+                    {
+                        "id": "6305829fe4b0b231a7e62821",
+                        "key": "givenName",
+                        "type": "text",
+                        "isDefault": true,
+                        "createdOn": 1661305503552,
+                        "lastModified": 1661305503552
+                    },
+                    {
+                        "id": "6305829fe4b0b231a7e62822",
+                        "key": "familyName",
+                        "type": "text",
+                        "isDefault": true,
+                        "createdOn": 1661305503552,
+                        "lastModified": 1661305503552
+                    },
+                    {
+                        "id": "6305829fe4b0b231a7e62823",
+                        "key": "emailAddress",
+                        "type": "email",
+                        "isDefault": true,
+                        "createdOn": 1661305503552,
+                        "lastModified": 1661305503552
+                    },
+                    {
+                        "id": "6305829fe4b0b231a7e62825",
+                        "key": "phoneNumber",
+                        "type": "tel",
+                        "isDefault": true,
+                        "createdOn": 1661305503552,
+                        "lastModified": 1661305503552
+                    },
+                    {
+                        "id": "6305829fe4b0b231a7e62826",
+                        "key": "companyName",
+                        "type": "text",
+                        "isDefault": true,
+                        "createdOn": 1661305503552,
+                        "lastModified": 1661305503552
+                    },
+                    {
+                        "id": "6305829fe4b0b231a7e62827",
+                        "key": "positionTitle",
+                        "type": "text",
+                        "isDefault": true,
+                        "createdOn": 1661305503552,
+                        "lastModified": 1661305503552
+                    }
+                ]
+            }
+            
+            
+## Company Membership Directory [/membershipDirectory/corporateMemberships]
+
+### Retrieve the Company Membership Directory List [POST]
+
+Retrieve the company memberships from the membership directory of an organization. You will receive only active company memberships. This endpoint will return a list of Company Membership  Model.
+
+If a member has set up an image, their image information can be accessed within the response body of this endpoint.
+* For company member, the image associated with the member is located within the element identified by the path `value.image`;
+
+* For individual members, the images can be found within the elements identified by the path `value.members[].image`;
+
++ Request (application/json)
+
+    + Headers
+    
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            requestOrganizationId: 533
+            
+    + Body
+    
+            {
+                "projection":[],
+                "filter":[
+                    {
+                        "projection":"featured",
+                        "operator":"eq",
+                        "values":[false]
+                    },
+                    {
+                        "projection":"name",
+                        "operator":"st",
+                        "values":["E"]
+                    },
+                    {
+                        "projection":"industryCode",
+                        "operator":"eq",
+                        "values":["COMPSW"]
+                    }
+                ],
+                "search":{
+                    "fields":["name"],
+                    "value":"Eventbank",
+                    "fullText":true
+                },
+                "order":{
+                    "name":"asc"
+                },
+                "offset" : 0,
+                "limit" : 20
+            }
+
++ Response 200 (application/json)
+
+    + Body
+            
+            {
+                "warnings": [],
+                "errors": [],
+                "metadata": {
+                    "pagination": {
+                        "total": 2
+                    }
+                },
+                "value": [
+                    {
+                        "id": 39355,
+                        "membershipId": 16875,
+                        "membershipType": {
+                            "id": 612,
+                            "title": "Company Type B",
+                            "type": "Company"
+                        },
+                        "startDate": 1563120001000,
+                        "featured": false,
+                        "name": "Eventbank",
+                        "properties": {
+                            "linked_in_url": ""
+                        },
+                        "adminContact": {
+                            "language": {
+                                "code": "en"
+                            },
+                            "givenName": "Ivy",
+                            "familyName": "L",
+                            "positionTitle": "",
+                            "emailAddress": {
+                                "value": "ivy@glueup.com"
+                            },
+                            "phoneNumber": {
+                                "value": ""
+                            }
+                        },
+                        "image": {
+                          "filename": "9876deed-5432-abcd-1a2b-9876543210ab.png",
+                          "id": "9876deed-5432-abcd-1a2b-9876543210ab",
+                          "uri": "/resources/public/images/logo/::size::/9876deed-5432-abcd-1a2b-9876543210ab.png"
+                        },
+                        "members": [
+                            {
+                                "id": 39409,
+                                "membershipId": 16875,
+                                "featured": false,
+                                "emailAddress": {
+                                    "value": "test.user@glueup.com"
+                                },
+                                "phone": {
+                                    "value": "0123456789"
+                                },
+                                "givenName": "Test",
+                                "familyName": "User",
+                                "primary": true,
+                                "image": {
+                                  "filename": "3a8e75d8-4b6c-40d1-9e7f-1a2b3c4d5e6f.png",
+                                  "id": "3a8e75d8-4b6c-40d1-9e7f-1a2b3c4d5e6f",
+                                  "uri": "/resources/public/images/square/::size::/3a8e75d8-4b6c-40d1-9e7f-1a2b3c4d5e6f.png"
+                                }
+                            }
+                        ]
+                    },
+                    {
+                        "id": 39406,
+                        "membershipId": 16908,
+                        "membershipType": {
+                            "id": 612,
+                            "title": "Company Type B",
+                            "type": "Company"
+                        },
+                        "startDate": 1563638401000,
+                        "featured": false,
+                        "name": "Eventbank",
+                        "properties": {
+                            "linked_in_url": ""
+                        },
+                        "adminContact": {
+                            "language": {
+                                "code": "en"
+                            },
+                            "givenName": "Ivy",
+                            "familyName": "L",
+                            "positionTitle": "",
+                            "emailAddress": {
+                                "value": "ivy@glueup.com"
+                            },
+                            "phoneNumber": {
+                                "value": ""
+                            }
+                        },
+                        "members": [
+                            {
+                                "id": 39407,
+                                "membershipId": 16908,
+                                "featured": false,
+                                "emailAddress": {
+                                    "value": "ivy@glueup.com"
+                                },
+                                "givenName": "Ivy",
+                                "familyName": "L",
+                                "primary": true
+                            },
+                            {
+                                "id": 39408,
+                                "membershipId": 16908,
+                                "featured": false,
+                                "emailAddress": {
+                                    "value": "test.user@glueup.com"
+                                },
+                                "givenName": "Test",
+                                "familyName": "User",
+                                "primary": false
+                            }
+                        ]
+                    }
+                ]
+            }
+
+### Retrieve the Basic Company Membership Directory List [POST /membershipDirectory/corporateMemberships/basic]
+
+Retrieve the basic company memberships from the membership directory of an organization. You will receive only active company memberships. This endpoint will return a list of Company Membership Model with only basic information.
+
++ Request (application/json)
+
+    + Headers
+    
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            requestOrganizationId: 533
+    
+    + Body
+    
+            {
+                "projection":[],
+                "filter":[
+                    {
+                        "projection":"featured",
+                        "operator":"eq",
+                        "values":[false]
+                    },
+                    {
+                        "projection":"name",
+                        "operator":"st",
+                        "values":["E"]
+                    },
+                    {
+                        "projection":"industryCode",
+                        "operator":"eq",
+                        "values":["COMPSW"]
+                    }
+                ],
+                "search":{
+                    "fields":["name"],
+                    "value":"Eventbank",
+                    "fullText":true
+                },
+                "order":{
+                    "name":"asc"
+                },
+                "offset" : 0,
+                "limit" : 20
+            }
+
++ Response 200 (application/json)
+
+    + Body
+    
+            {
+                "warnings": [],
+                "errors": [],
+                "metadata": {
+                    "pagination": {
+                        "total": 2
+                    }
+                },
+                "value": [
+                    {
+                        "id": 39355,
+                        "membershipId": 16875,
+                        "featured": false,
+                        "name": "Eventbank"
+                    },
+                    {
+                        "id": 39406,
+                        "membershipId": 16908,
+                        "featured": false,
+                        "name": "Eventbank"
+                    }
+                ]
+            }
+
+### Retrieve a Company Membership [GET /membershipDirectory/corporate/{membershipId}]
+
+Retrieve the company membership with the *membershipIdD*. This endpoint will return a Company Membership Model.
+
++ Parameters
+
+    + membershipId: 16875 (required, int) - Membership ID of company membership.
+    
++ Request
+
+    + Headers
+    
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            requestOrganizationId: 533
+
++ Response 200 (application/json)
+
+    + Body
+    
+            {
+                "warnings": [],
+                "errors": [],
+                "value": {
+                    "id": 39355,
+                    "membershipId": 16875,
+                    "membershipType": {
+                        "id": 612,
+                        "title": "Company Type B",
+                        "type": "Company"
+                    },
+                    "startDate": 1563120001000,
+                    "featured": false,
+                    "name": "Eventbank",
+                    "properties": {
+                        "linked_in_url": ""
+                    },
+                    "adminContact": {
+                        "language": {
+                            "code": "en"
+                        },
+                        "givenName": "Ivy",
+                        "familyName": "L",
+                        "positionTitle": "",
+                        "emailAddress": {
+                            "value": "ivy@glueup.com"
+                        },
+                        "phoneNumber": {
+                            "value": ""
+                        }
+                    },
+                    "members": [
+                        {
+                            "id": 39409,
+                            "membershipId": 16875,
+                            "featured": false,
+                            "emailAddress": {
+                                "value": "test.user@glueup.com"
+                            },
+                            "givenName": "Test",
+                            "familyName": "User",
+                            "primary": true
+                        }
+                    ]
+                }
+            }
+
+## Individual Membership Directory [/membershipDirectory/individualMemberships]
+
+### Retrieve the Individual Membership Directory List [POST]
+
+Retrieve the individual memberships from the membership directory of an organization. You will receive only active individual memberships. This endpoint will return a list of Individual Membership  Model.
+
++ Request (application/json)
+
+    + Headers
+    
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            requestOrganizationId: 533
+    
+    + Body
+    
+            {
+                "projection":[],
+                "filter":[
+                    {
+                        "projection":"featured",
+                        "operator":"eq",
+                        "values":[false]
+                    }
+                ],
+                "order":{
+                    "name":"asc"
+                },
+                "offset" : 0,
+                "limit" : 20
+            }
+
++ Response 200 (application/json)
+
+    + Body
+            
+            {
+                "warnings": [],
+                "errors": [],
+                "metadata": {
+                    "pagination": {
+                        "total": 1
+                    }
+                },
+                "value": [
+                    {
+                        "id": 39413,
+                        "membershipId": 16911,
+                        "membershipType": {
+                            "id": 611,
+                            "title": "People Type A",
+                            "type": "People"
+                        },
+                        "startDate": 1563724801000,
+                        "featured": false,
+                        "emailAddress": {
+                            "value": "test.user@glueup.com"
+                        },
+                        "phone": {
+                            "value": "0123456789"
+                        },
+                        "givenName": "Test",
+                        "familyName": "User",
+                        "companyName": "Eventbank",
+                        "properties": {
+                            "graduated-school": "",
+                            "food-preference": {
+                                "code": "vegetarian",
+                                "title": {
+                                    "en": "Vegetarian"
+                                }
+                            }
+                        },
+                        "adminContact": {
+                            "language": {
+                                "code": "en"
+                            },
+                            "givenName": "Test",
+                            "familyName": "User",
+                            "positionTitle": "",
+                            "emailAddress": {
+                                "value": "test.user@glueup.com"
+                            },
+                            "phoneNumber": {
+                                "value": ""
+                            }
+                        }
+                    }
+                ]
+            }
+
+### Retrieve a Individual Membership [GET /membershipDirectory/individual/{membershipId}]
+
+Retrieve the individual membership with the *membershipId*. This endpoint will return a Individual Membership Model.
+
++ Parameters
+
+    + membershipId: 16911 (required, int) - Membership ID of company membership.
+    
++ Request
+
+    + Headers
+    
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            requestOrganizationId: 533
+            
+
++ Response 200 (application/json)
+
+    + Body
+    
+            {
+                "warnings": [],
+                "errors": [],
+                "value": {
+                    "id": 39413,
+                    "membershipId": 16911,
+                    "membershipType": {
+                        "id": 611,
+                        "title": "People Type A",
+                        "type": "People"
+                    },
+                    "startDate": 1563724801000,
+                    "featured": false,
+                    "emailAddress": {
+                        "value": "test.user@glueup.com"
+                    },
+                    "phone" : {
+                        "value" : "0123456789"
+                    },
+                    "givenName": "Test",
+                    "familyName": "User",
+                    "companyName": "Eventbank",
+                    "properties": {
+                        "graduated-school": "",
+                        "food-preference": {
+                            "code": "vegetarian",
+                            "title": {
+                                "en": "Vegetarian"
+                            }
+                        }
+                    },
+                    "adminContact": {
+                        "language": {
+                            "code": "en"
+                        },
+                        "givenName": "Test",
+                        "familyName": "User",
+                        "positionTitle": "",
+                        "emailAddress": {
+                            "value": "test.user@glueup.com"
+                        },
+                        "phoneNumber": {
+                            "value": ""
+                        }
+                    },
+                    "primary": true
+                }
+            }
+
+## Membership Member Directory [/membershipDirectory/members]
+
+### Retrieve the Membership Member Directory List [POST]
+
+Retrieve members from the membership directory of an organization. You will receive only active membership members. This endpoint will return a list of Membership Member Model.
+    
++ Request (application/json)
+
+    + Headers
+    
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            requestOrganizationId: 533
+            
+    + Body
+    
+            {
+                "projection":[],
+                "filter":
+                [ 
+                    {
+                        "projection":"featured",
+                        "operator":"eq",
+                        "values":[false]
+                    },
+                    {
+                        "projection":"familyName",
+                        "operator":"st",
+                        "values":["U"]
+                    },
+                    {
+                        "projection": "properties.food-preference",
+                        "operator": "eq",
+                        "values": ["vegetarian"]
+                    }
+                ],
+                "search": {
+                    "fields":["givenName","familyName","emailAddress","companyName"],
+                    "value":"Test",
+                    "fullText":true
+                },
+                "order" : {
+                    "familyName":"asc"
+                },
+                "offset" : 0,
+                "limit" : 20
+            }
+
++ Response 200 (application/json)
+
+    + Body
+    
+            {
+                "warnings": [],
+                "errors": [],
+                "metadata": {
+                    "pagination": {
+                        "total": 3
+                    }
+                },
+                "value": [
+                    {
+                        "membership": {
+                            "id": 16908,
+                            "membershipType": {
+                                "id": 612,
+                                "title": "Company Type B",
+                                "type": "Company"
+                            },
+                            "startDate": 1563638401000
+                        },
+                        "individualMember": {
+                            "id": 39408,
+                            "membershipId": 16908,
+                            "featured": false,
+                            "emailAddress": {
+                                "value": "test.user@glueup.com"
+                            },
+                            "phone": {
+                                "value": "0123456789"
+                            },
+                            "givenName": "Test",
+                            "familyName": "User",
+                            "companyName": "Eventbank",
+                            "properties": {
+                                "graduated-school": "",
+                                "food-preference": {
+                                    "code": "vegetarian",
+                                    "title": {
+                                        "en": "Vegetarian"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "membership": {
+                            "id": 16911,
+                            "membershipType": {
+                                "id": 611,
+                                "title": "People Type A",
+                                "type": "People"
+                            },
+                            "startDate": 1563724801000
+                        },
+                        "individualMember": {
+                            "id": 39413,
+                            "membershipId": 16911,
+                            "featured": false,
+                            "emailAddress": {
+                                "value": "test.user@glueup.com"
+                            },
+                            "givenName": "Test",
+                            "familyName": "User",
+                            "companyName": "Eventbank",
+                            "properties": {
+                                "graduated-school": "",
+                                "food-preference": {
+                                    "code": "vegetarian",
+                                    "title": {
+                                        "en": "Vegetarian"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "membership": {
+                            "id": 16875,
+                            "membershipType": {
+                                "id": 612,
+                                "title": "Company Type B",
+                                "type": "Company"
+                            },
+                            "startDate": 1563120001000
+                        },
+                        "individualMember": {
+                            "id": 39409,
+                            "membershipId": 16875,
+                            "featured": false,
+                            "emailAddress": {
+                                "value": "test.user@glueup.com"
+                            },
+                            "givenName": "Test",
+                            "familyName": "User",
+                            "companyName": "Eventbank",
+                            "properties": {
+                                "graduated-school": "",
+                                "food-preference": {
+                                    "code": "vegetarian",
+                                    "title": {
+                                        "en": "Vegetarian"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                ]
+            }
+
+### Retrieve the Basic Membership Member Directory List [POST /membershipDirectory/members/basic]
+
+Retrieve members from the membership directory of an organization only with basic information. You will receive only active membership members. This endpoint will return a list of Membership Member Model.
+    
++ Request (application/json)
+
+    + Headers
+    
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            requestOrganizationId: 533
+            
+    + Body
+    
+            {
+                "projection":[],
+                "filter":
+                [ 
+                    {
+                        "projection":"featured",
+                        "operator":"eq",
+                        "values":[false]
+                    },
+                    {
+                        "projection":"familyName",
+                        "operator":"st",
+                        "values":["U"]
+                    },
+                    {
+                        "projection": "properties.food-preference",
+                        "operator": "eq",
+                        "values": ["vegetarian"]
+                    }
+                ],
+                "search": {
+                    "fields":["givenName","familyName","emailAddress","companyName"],
+                    "value":"Test",
+                    "fullText":true
+                },
+                "order" : {
+                    "familyName":"asc"
+                },
+                "offset" : 0,
+                "limit" : 20
+            }
+
++ Response 200 (application/json)
+
+    + Body
+    
+            {
+                "warnings": [],
+                "errors": [],
+                "metadata": {
+                    "pagination": {
+                        "total": 3
+                    }
+                },
+                "value": [
+                    {
+                        "individualMember": {
+                            "id": 39408,
+                            "membershipId": 16908,
+                            "featured": false,
+                            "givenName": "Test",
+                            "familyName": "User",
+                            "companyName": "Eventbank"
+                        }
+                    },
+                    {
+                        "individualMember": {
+                            "id": 39409,
+                            "membershipId": 16875,
+                            "featured": false,
+                            "givenName": "Test",
+                            "familyName": "User",
+                            "companyName": "Eventbank"
+                        }
+                    },
+                    {
+                        "individualMember": {
+                            "id": 39413,
+                            "membershipId": 16911,
+                            "featured": false,
+                            "givenName": "Test",
+                            "familyName": "User",
+                            "companyName": "Eventbank"
+                        }
+                    }
+                ]
+            }
+
+### Retrieve the Membership Member by Member ID [GET /membershipDirectory/member/{memberId}]
+
+Retrieve member from the membership directory by *memberId*. This endpoint will return a Membership Member Model.
+    
++ Parameters
+
+    + memberId: 39408 (int, required) - Individual member ID.
+    
++ Request 
+
+    + Headers
+    
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            requestOrganizationId: 533
+            
++ Response 200 (application/json)
+
+    + Body
+    
+            {
+                "warnings": [],
+                "errors": [],
+                "value": {
+                    "membership": {
+                        "id": 16908,
+                        "membershipType": {
+                            "id": 612,
+                            "title": "Company Type B",
+                            "type": "Company"
+                        },
+                        "startDate": 1563638401000
+                    },
+                    "individualMember": {
+                        "id": 39408,
+                        "membershipId": 16908,
+                        "featured": false,
+                        "emailAddress": {
+                            "value": "test.user@glueup.com"
+                        },
+                        "phone": {
+                            "value": "0123456789"
+                        },
+                        "givenName": "Test",
+                        "familyName": "User",
+                        "companyName": "Eventbank",
+                        "properties": {
+                            "food-preference": {
+                                "code": "vegetarian",
+                                "title": {
+                                    "en": "Vegetarian"
+                                }
+                            },
+                            "graduated-school": ""
+                        },
+                        "primary": false
+                    }
+                }
+            } 
+
+## Membership Industry List [/membershipDirectory/type/{membershipType}/industryCode/list]
+
+### Retrieve the Membership Industry List By Membership Type [GET]
+
+Retrieve the memberhip industry list by *membershipType* ( People / Company ).  This endpoint will return a list of industry codes.
+    
++ Parameters
+
+    + membershipType: Company (string, required) - Type of membership, can be People / Company.
+    
++ Request 
+
+    + Headers
+    
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            requestOrganizationId: 533
+            
++ Response 200 (application/json)
+
+    + Body
+    
+            {
+                "warnings": [],
+                "errors": [],
+                "value": [
+                    "COMPSW"
+                ]
+            }
+
+
+## Membership Type List [/public/membership/publishedMembershipTypeList]
+
+### Retrieve the Membership Type List By Page [POST]
+
+Retrieve the memberhip type list by page.  This endpoint will return a list of membership types.
+
+The filter/projection/search/order will only effect on top level object.
+
++ Request (application/json)
+
+    + Headers
+
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            
+    + Body
+    
+            {
+                "projection": ["tiered"],
+                "filter": [
+                    {
+                        "projection": "title",
+                        "operator": "ne",
+                        "values": [
+                            ""
+                        ]
+                    },
+                    {
+                        "projection": "tiered",
+                        "operator": "eq",
+                        "values": [
+                            true
+                        ]
+                    }
+                ],
+                "search": {
+                    "fields": [
+                        "internalTitle"
+                    ],
+                    "value": "Company ",
+                    "fullText": true
+                },
+                "order": {
+                    "title": "asc"
+                },
+                "offset": 0,
+                "limit": 20,
+                "language" : {
+                    "code" : "en"
+                }
+            }
+            
+
++ Response 200 (application/json)
+
+    + Body
+
+            {
+                "warnings": [],
+                "errors": [],
+                "metadata": {
+                    "pagination": {
+                        "total": 1
+                    }
+                },
+                "value": [
+                    {
+                        "id": 702,
+                        "organizationId": 2040,
+                        "title": "Membership Type Name eg.",
+                        "internalTitle": "Internal Membership Type Name eg.",
+                        "type": "People",
+                        "description": "<p>Membership Description eg.</p>",
+                        "status": "Active",
+                        "approvalRequired": true,
+                        "renewalApprovalRequired": true,
+                        "renewalConfirmRequired": true,
+                        "memberApprovalRequired": false,
+                        "activationRequired": true,
+                        "index": 4,
+                        "defaultLanguageCode": "en",
+                        "languageCode": "en",
+                        "renewalCreationPeriod": 30,
+                        "gracePeriod": 30,
+                        "gracePeriodEnabled": true,
+                        "showInDirectory": true,
+                        "createdOn": 1572257697000,
+                        "lastModified": 1572257992000,
+                        "activeVersions": [
+                            {
+                                "organizationId": 2040,
+                                "membershipTypeId": 702,
+                                "version": 1,
+                                "status": "Current",
+                                "duration": 12,
+                                "memberLimit": 0,
+                                "defaultCurrencyCode": "CNY",
+                                "free": false,
+                                "additionalMembersAllowed": false,
+                                "additionalMembersFree": true,
+                                "additionalMembersLimit": 0,
+                                "extraMembersPriceEnabled": false,
+                                "newTermFixedDate": true,
+                                "newTermFixedDay": 1,
+                                "newTermFixedMonth": "JANUARY",
+                                "proRataEnabled": true,
+                                "proRataStartFrom": "JANUARY",
+                                "proRataTermSection": "Month",
+                                "proRataPriceRounding": "Current",
+                                "crossTermEnabled": true,
+                                "crossTermPeriod": 30,
+                                "crossTermExcludeCurrentPrice": true,
+                                "createdOn": 1572257697000,
+                                "lastModified": 1572257992000,
+                                "prices": [
+                                    {
+                                        "id": 2107,
+                                        "currency": "CNY",
+                                        "price": 33.00
+                                    },
+                                    {
+                                        "id": 2108,
+                                        "currency": "USD",
+                                        "price": 22.00
+                                    }
+                                ],
+                                "taxes": [],
+                                "invoice": {
+                                    "isInvoiceApplicantCharged": true,
+                                    "isBTInvoiceEnabled": false,
+                                    "btInvoiceChargePercentage": 0.00,
+                                    "isVATGeneralInvoiceEnabled": true,
+                                    "vatGeneralInvoiceChargePercentage": 1.00,
+                                    "vatGeneralInvoiceMinimumAmount": 2.00,
+                                    "isVATSpecialInvoiceEnabled": true,
+                                    "vatSpecialInvoiceChargePercentage": 3.00,
+                                    "vatSpecialInvoiceMinimumAmount": 4.00
+                                },
+                                "extraFee": {
+                                    "application": {
+                                        "prices": [
+                                            {
+                                                "currency": "CNY",
+                                                "price": 1.00
+                                            },
+                                            {
+                                                "currency": "USD",
+                                                "price": 1.00
+                                            }
+                                        ],
+                                        "proRataEnabled": false
+                                    },
+                                    "renewal": {
+                                        "prices": [
+                                            {
+                                                "currency": "CNY",
+                                                "price": 2.00
+                                            },
+                                            {
+                                                "currency": "USD",
+                                                "price": 2.00
+                                            }
+                                        ],
+                                        "proRataEnabled": false
+                                    }
+                                },
+                                "discount": {
+                                    "application": {
+                                        "prices": [
+                                            {
+                                                "currency": "CNY",
+                                                "price": 2.00
+                                            },
+                                            {
+                                                "currency": "USD",
+                                                "price": 2.00
+                                            }
+                                        ],
+                                        "proRataEnabled": true
+                                    },
+                                    "renewal": {
+                                        "prices": [
+                                            {
+                                                "currency": "CNY",
+                                                "price": 3.00
+                                            },
+                                            {
+                                                "currency": "USD",
+                                                "price": 3.00
+                                            }
+                                        ],
+                                        "proRataEnabled": false
+                                    }
+                                },
+                                "additionalMembersPrices": [],
+                                "extraMembersPrices": []
+                            }
+                        ],
+                        "public": true
+                    }
+                ]
+            }
+            
+## Membership List [/membership/activeApplicationList]
+
+### Retrieve the Membership List By Page [GET]
+
+Retrieve the memberhip list by current login user.  This endpoint will return a list of memberships.
+
++ Request (application/json)
+
+    + Headers
+
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            token: 7VSlWD1i14k8sO1K0gL4we2Jg8vDJ2T6LAHjIeADAdWzlkeVTSsezSbjpThdCTpUFPxEDraSSkwdOdXo6Z9kIiqr60PIW48jtHDTmoIv73o4RJk2TbnU6JXc97Zfes2I
+
+
++ Response 200 (application/json)
+
+    + Body
+
+            {
+                "warnings": [],
+                "errors": [],
+                "metadata": {
+                    "pagination": {
+                        "total": 1
+                    }
+                },
+                "value": [
+                    {
+                        "id": 17483,
+                        "organizationId": 141,
+                        "status": "Active",
+                        "currencyCode": "USD",
+                        "unitPrice": 1000.00,
+                        "totalPrice": 1000.00,
+                        "paymentWay": "AtdoorCreditCard",
+                        "purchaserGivenName": "David",
+                        "purchaserFamilyName": "Milosevic",
+                        "purchaserEmail": "david.milosevic@glueup.com",
+                        "purchaserLanguageCode": "en",
+                        "purchaserCompanyName": "Coca Bola",
+                        "purchasedCount": 0,
+                        "type": "People",
+                        "memberId": 40243,
+                        "membershipTypeId": 836,
+                        "createdOn": 1592893832000,
+                        "createdBy": 15,
+                        "lastModified": 1592893868000,
+                        "lastModifiedBy": 15,
+                        "startDate": 1592841601000,
+                        "endDate": 1624377601000,
+                        "primaryMember": {
+                            "givenName": "David",
+                            "familyName": "Milosevic",
+                            "companyName": ""
+                        },
+                        "company": {
+                            "name": ""
+                        },
+                        "membershipType": {
+                            "id": 836,
+                            "organizationId": 141,
+                            "title": "Blue",
+                            "internalTitle": "Blue",
+                            "type": "People",
+                            "description": "",
+                            "status": "Active",
+                            "approvalRequired": false,
+                            "renewalApprovalRequired": true,
+                            "renewalConfirmRequired": true,
+                            "memberApprovalRequired": false,
+                            "activationRequired": false,
+                            "index": 214,
+                            "defaultLanguageCode": "en",
+                            "languageCode": "en",
+                            "renewalCreationPeriod": 30,
+                            "gracePeriod": 30,
+                            "gracePeriodEnabled": true,
+                            "showInDirectory": true,
+                            "createdOn": 1591765889000,
+                            "lastModified": 1591765988000,
+                            "public": true
+                        }
+                    }
+                ]
+            }
+## Group Finance Collection
+### Retrieve Finance Invoice List [POST /finance/invoice/list]
+         
+Retrieve the finance invoice list of an organization. This endpoint returns an array of invoice by status and 'date'.
+
++ Request (application/json)
+    
+    + Headers
+        
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            
+    + Body
+            
+            {
+                "projection": [],
+                "limit": 20,
+                "offset": 0,
+                "filter": [
+                    {
+                       "projection":"status",
+                       "operator":"eq",
+                       "values":["Overdue"]
+                    }
+                ],
+                "order": {
+                    "createdOn": "desc"
+                }
+            }
+            
++ Response 200 (application/json)
+
+  + Body
+  
+          {
+                "warnings": [],
+                "errors": [],
+                "metadata": {
+                    "pagination": {
+                        "total": 106
+                    }
+                },
+                "value": [
+                    {
+                        "id": 668551,
+                        "organizationId": 2018,
+                        "number": "APP_INV000413",
+                        "title": "Invoice",
+                        "currency": "CNY",
+                        "faceTotal": 0.01,
+                        "balanceDue": 0.01,
+                        "proforma": false,
+                        "purchaserGivenName": "Andrea",
+                        "purchaserFamilyName": "Jurincic",
+                        "purchaserEmail": "andrea.jurincic@glueup.com",
+                        "origin": "MembershipApplication",
+                        "voided": false,
+                        "createdOn": 1698739549000,
+                        "lastModified": 1698739549000,
+                        "issueDate": 1698739548592,
+                        "dueDate": 1701273601000
+                    },
+                    {
+                        "id": 668550,
+                        "organizationId": 2018,
+                        "number": "APP_INV000412",
+                        "title": "Invoice",
+                        "currency": "CNY",
+                        "faceTotal": 41.82,
+                        "balanceDue": 41.82,
+                        "proforma": false,
+                        "purchaserGivenName": "Shamsa1111y",
+                        "purchaserFamilyName": "Ashraf",
+                        "purchaserEmail": "shamsa.ashraf@glueup.com",
+                        "purchaserPhone": "",
+                        "purchaserCompanyName": "CEO & SUSTAINABILITY ADVISOR OF COPELAND &AMP; PARTNERSHIP LTD",
+                        "purchaserPositionTitle": "z",
+                        "origin": "MembershipApplication",
+                        "voided": false,
+                        "createdOn": 1698739503000,
+                        "lastModified": 1733290178000,
+                        "issueDate": 1698739503255,
+                        "dueDate": 1701273601000
+                    },
+                    {
+                        "id": 667974,
+                        "organizationId": 2018,
+                        "number": "INV000325",
+                        "title": "Invoice",
+                        "currency": "USD",
+                        "faceTotal": 1995.84,
+                        "balanceDue": 1995.84,
+                        "proforma": false,
+                        "origin": "Custom",
+                        "voided": false,
+                        "createdOn": 1695882947000,
+                        "lastModified": 1695882993000,
+                        "issueDate": 1695882947000,
+                        "dueDate": 1698422401000
+                    },
+                    {
+                        "id": 667969,
+                        "organizationId": 2018,
+                        "number": "INV000324",
+                        "title": "Invoice",
+                        "currency": "USD",
+                        "faceTotal": 1229.92,
+                        "balanceDue": 1229.92,
+                        "proforma": false,
+                        "origin": "Custom",
+                        "voided": false,
+                        "createdOn": 1695875005000,
+                        "lastModified": 1695875033000,
+                        "issueDate": 1695875005000,
+                        "dueDate": 1698422401000
+                    },
+                    {
+                        "id": 667520,
+                        "organizationId": 2018,
+                        "number": "INV000323",
+                        "title": "Invoice",
+                        "currency": "USD",
+                        "faceTotal": 10.00,
+                        "balanceDue": 10.00,
+                        "proforma": false,
+                        "origin": "Custom",
+                        "voided": false,
+                        "createdOn": 1692711909000,
+                        "lastModified": 1692711915000,
+                        "issueDate": 1692711908000,
+                        "dueDate": 1695225601000
+                    }
+           ]
+      }
+            
+### Retrieve One Finance Invoice [GET /finance/invoice/:invoiceId]
+         
+Retrieve one invoice with id. This endpoint returns one invoice detail with items.
+
++ Request (application/json)
+    
+    + Headers
+        
+            a: v=1.0;k=springfield_demo;ts=1382312423124;d=213213
+            token: xb5yhCUe4RhAH3VcMpqqh1Wr1aNCF5pnfbb2b7RUbYpT2KXVhHl0eQ7pIi3xb0cElrcv4OAhtPYdiJkDj_GfrY_77Ehh5qq6aqB5ZnB4BFaOnQBsW7iUB3m9T2yk2IrH
+            requestOrganizationId: 2018
+            
+            
++ Response 200 (application/json)
+
+  + Body
+  
+          {
+                "warnings": [],
+                "errors": [],
+                "value": {
+                    "id": 8227452,
+                    "organizationId": 2018,
+                    "number": "APP_INV000474",
+                    "proformaNumber": "PRO000230",
+                    "title": "Invoice",
+                    "paymentCompletionDate": 1742875201000,
+                    "currency": "USD",
+                    "faceTotal": 100.00,
+                    "balanceDue": 0.00,
+                    "proforma": false,
+                    "purchaserGivenName": "Lolly31",
+                    "purchaserFamilyName": "Zhang",
+                    "purchaserEmail": "lolly31.zhang@glueup.com",
+                    "origin": "MembershipApplication",
+                    "voided": false,
+                    "createdOn": 1742895336000,
+                    "lastModified": 1742895827000,
+                    "issueDate": 1742832001000,
+                    "dueDate": 1745424001000,
+                    "items": [
+                        {
+                            "id": 10207304,
+                            "organizationId": 2018,
+                            "invoiceId": 8227452,
+                            "status": "Valid",
+                            "type": "MembershipApplication",
+                            "paidStatus": "Paid",
+                            "faceValue": 100.00,
+                            "createdOn": 1742895336000,
+                            "lastModified": 1742895827000,
+                            "payment": {
+                                "id": 557377,
+                                "organizationId": 2018,
+                                "amount": 100.00,
+                                "paymentMethod": "AtdoorCash",
+                                "status": "Valid",
+                                "settleStatus": "Settle",
+                                "createdOn": 1742895827000
+                            }
+                        }
+                    ],
+                    "address": {
+                        "customFormAnswers": {
+                            "mandatoryfield": "kjjk"
+                        }
+                    },
+                    "company": {
+                        "id": 1000020,
+                        "organizationId": 2018,
+                        "name": "GDPR"
+                    },
+                    "contacts": [
+                        {
+                            "id": 1000398,
+                            "organizationId": 2018,
+                            "familyName": "Zhang",
+                            "givenName": "Lolly31",
+                            "emailAddress": {
+                                "value": "lolly31.zhang@glueup.com"
+                            }
+                        }
+                    ]
+                }
+            }
+           
+
+
+
+## Group Model Formats
+
+### Event Model
+**Notes** : The event model contains more properties that are used in the administration section.
+If you need details on other properties and/or miss an important one, please contact us.
+
+Sample Code:
+```
+{
+    "id": 937, 
+    "language": {
+        "code": "en"
+    }, 
+    "defaultLanguage": {
+        "code": "en"
+    }, 
+    "title": "Test Edit default Ticket", 
+    "startDateTime": 1453345200000, 
+    "endDateTime": 1459418400000, 
+    "venueInfo": {
+        "id": 937, 
+        "venueReusable": false, 
+        "zoom": 14, 
+        "name": "Soho", 
+        "city": [ ], 
+        "cityName": "Bengaluru", 
+        "country": {
+            "code": "IN", 
+            "name": "India"
+        }, 
+        "latitude": 12.9731, 
+        "longitude": 77.592385
+    }, 
+    "eventRole": {
+        "code": "ORGNZ", 
+        "name": "Lead Organizer"
+    }, 
+    "published": true
+}
+
+```
+
+  <table>
+  <thead>
+  <tr>
+    <th>Property</th>
+    <th>Type</th>
+    <th>Description</th>
+    <th>Notes</th>
+  </tr>
+  </thead>
+  <tbody>
+  <tr>
+    <td>id</td>
+    <td>int</td>
+    <td>Event identifier.</td>
+    <td></td>
+  </tr>
+  <tr>
+    <td>title</td>
+    <td>string</td>
+    <td>Event title.</td>
+    <td></td>
+  </tr>
+  <tr>
+    <td>subTitle</td>
+    <td>string</td>
+    <td>Event subtitle.</td>
+    <td></td>
+  </tr>
+  <tr>
+    <td>summary</td>
+    <td>text</td>
+    <td>Event summary.</td>
+    <td></td>
+  </tr>
+  <tr>
+    <td>startDateTime</td>
+    <td>timestamp</td>
+    <td>Start date and time of the event.</td>
+    <!-- Merged Notes cell starts here -->
+    <td rowspan="2">
+    <div>
+        The <code>startDateTime</code> and <code>endDateTime</code> timestamps are in the timezone <strong>UTC+08:00</strong>, regardless of the timezone specified in <code>venueInfo</code>.
+      </div>
+      <div style="margin-top: 10px;">
+        <strong>Example:</strong><br/>
+        <pre><code>// Java
+LocalDateTime startDateTimeLocal = 
+    ZonedDateTime.ofInstant(
+    Instant.ofEpochMilli(startDateTime),
+    ZoneId.ofOffset("UTC", 
+        ZoneOffset.ofHours(8))
+    ).toLocalDateTime();
+        </code></pre>
+      </div>
+    </td>
+  </tr>
+  <tr>
+    <td>endDateTime</td>
+    <td>timestamp</td>
+    <td>End date and time of the event.</td>
+    <!-- Notes cell is omitted because it's merged above -->
+  </tr>
+  <tr>
+    <td>venueInfo</td>
+    <td>Location Model</td>
+    <td>Event venue informations.</td>
+    <td>Use the location model format. Please see below.</td>
+  </tr>
+  <tr>
+    <td>eventRole</td>
+    <td>Reference Data Model</td>
+    <td>Role of the organization that created the event.</td>
+    <td>Use the Reference Data model format. Please see below.</td>
+  </tr>
+  <tr>
+    <td>eventType</td>
+    <td>Reference Data Model</td>
+    <td>Type of the event.</td>
+    <td>Use the Reference Data model format. Please see below.</td>
+  </tr>
+  <tr>
+    <td>industry</td>
+    <td>Reference Data Model</td>
+    <td>Industry of the event.</td>
+    <td>Use the Reference Data model format. Please see below.</td>
+  </tr>
+  <tr>
+    <td>internalContact</td>
+    <td>Person Model</td>
+    <td>Person that is responsible for the event. Used by the organization internal staff.</td>
+    <td>Use the Reference Data model format. Please see below.</td>
+  </tr>
+  <tr>
+    <td>publicContact</td>
+    <td>Person Model</td>
+    <td>Person that is responsible for the event. Used for public information.</td>
+    <td>Use the Reference Data model format. Please see below.</td>
+  </tr>
+  <tr>
+    <td>defaultLanguage</td>
+    <td>Reference Data Model</td>
+    <td>The main language selected when the event was created.</td>
+    <td>Use the Reference Data model format. Please see below.</td>
+  </tr>
+  <tr>
+    <td>language</td>
+    <td>Reference Data Model</td>
+    <td>The current language retrieved.</td>
+    <td>Use the Reference Data model format. Please see below.</td>
+  </tr>
+  <tr>
+    <td>openToPublic</td>
+    <td>boolean</td>
+    <td>If that property is true, the event is public and will be displayed on the organization public page.</td>
+    <td></td>
+  </tr>
+  <tr>
+    <td>published</td>
+    <td>boolean</td>
+    <td>If that property is true, the event is published and so accessible from the event public page.</td>
+    <td></td>
+  </tr>
+  <tr>
+    <td>currencies</td>
+    <td>Reference Data Model</td>
+    <td>List of available currencies for the purchase of ticket for that event.</td>
+    <td>Use the Reference Data model format. Please see below.</td>
+  </tr>
+  </tbody>
+</table>
+
+
+### Location Model
+The Location Model is used to describe an address such as the event venue.
+```
+"venueInfo": {
+    "name": "EB Office", 
+    "streetAddress": "Guanghua Lu SOHO", 
+    "cityName": "Beijing", 
+    "province": "Beijing", 
+    "zipCode": "10000", 
+    "country": {
+        "code": "CN", 
+        "name": "China"
+    }, 
+    "info": "Add."
+}
+```
+
+  Property             | Type                | Description                       | Notes
+  -------------------- | --------------------| ----------------------------------| -------------
+  name                 | string              | The location name.                | 
+  streetAddress        | text                | The location full address.        | 
+  cityName             | string              | The location city.                | 
+  province             | string              | The location province.            | 
+  country              | Reference Data Model| The location country.             |
+  zipCode              | string              | The location zip code.            |
+  info                 | text                | The location extra informations. Can be use for directions etc… |
+
+### Membership Company Model
+If you need details on other properties and/or miss an important one, please contact us.
+```
+{
+    "featured": true,
+    "membershipId": 78,
+    "startDate" : 1482487597000, 
+    "adminContact":{
+        "givenName" : "John",
+        "familyName" : "Doe",
+        "emailAddress": {
+            "value": "john.doe@glueup.com"
+        }
+    }
+    "id": 21323,
+    "industryCode": "INVEST",
+    "address": {
+      "streetAddress": "Guang Hua Lu",
+      "cityName": "Beijing",
+      "province": "Beijing",
+      "zipCode": "100000",
+      "country": {
+        "code": "CN"
+      }
+    },
+    "phone": {
+      "value": "+86 13456789000"
+    },
+    "groups": {
+      "value": {
+        "value": "event"
+      }
+    },
+    "image": {
+      "filename": "64e2a82e-8ec0-4417-a584-b3d02f541383.png",
+      "id": "64e2a82e-8ec0-4417-a584-b3d02f541383",
+      "uri": "/resources/public/images/square/::size::/64e2a82e-8ec0-4417-a584-b3d02f541383.png"
+    },
+    "name": "GlueUp",
+    "fax": {
+      "value": "+86 13456789000"
+    },
+    "companyWebsiteAddress": "www.glueup.com",
+    "members": [
+      {
+        "id": 22183,
+        "phone": {
+          "value": "+86 13456789000"
+        },
+        "givenName": "John",
+        "familyName": "Doe",
+        "positionTitle": "Engineer",
+        "image": {
+          "filename": "64e2a82e-8ec0-4417-a584-b3d02f541383.png",
+          "id": "64e2a82e-8ec0-4417-a584-b3d02f541383",
+          "uri": "/resources/public/images/square/::size::/64e2a82e-8ec0-4417-a584-b3d02f541383.png"
+        }
+      }
+    ]
+}
+```
+
+  Property             | Type                | Description                       | Notes
+  -------------------- | --------------------| ----------------------------------| -------------
+  feature              | boolean             | Is featured.                      | 
+  membershipId         | int                 | Membership ID.                    | 
+  startDate            | timestamp           | Membership start date.            | 
+  adminContact         | Member Model        | Primary member.                   | 
+  id                   | int                 | Company ID.                       |
+  industryCode         | string              | Industry Code.                    |
+  address              | Location Model      | Company address.                  |
+  phone                | phone               | Company phone.                    | 
+  image                | Image Model         | Company logo.                     | 
+  name                 | string              | Company name.                     |
+  fax                  | phone               | Company fax.                      |
+  companyWebsiteAddress| string              | Company website.                  |
+  members              | Member Model        | Company members                   |
+
+### Membership Member Model
+If you need details on other properties and/or miss an important one, please contact us.
+
+```
+{   
+    "membership" : {
+        "id" : 78,
+        "startDate" : 1482487597000, 
+        "featured": true,
+        "membershipType":{
+            "id": 56,
+            "title": Entrepreneurs,
+            "type": People
+        } 
+    },
+    "individualMember" : {
+        "id": 132,
+        "membershipId": 78,
+        "image": {
+              "filename": "64e2a82e-8ec0-4417-a584-b3d02f541383.png",
+              "id": "64e2a82e-8ec0-4417-a584-b3d02f541383",
+              "uri": "/resources/public/images/square/::size::/64e2a82e-8ec0-4417-a584-b3d02f541383.png"
+            },
+        "givenName" : "John",
+        "familyName" : "Doe",
+        "companyName" : "Eventbank",
+        "postionTitle" : "Developer",
+        "industry": {
+              "code": "CONSLT"
+        },
+        "address": {
+            "streetAddress": "Guang Hua Lu",
+            "cityName": "Beijing",
+            "province": "Beijing",
+            "zipCode": "100000",
+            "country": {
+                "code": "CN"
+            }
+         },
+        "emailAddress": {
+            "value": "john.doe@glueup.com"
+        },
+        "phone": {
+            "value": "+86 15201516676"
+        },
+    }
+}
+```
+
+Membership Member Model include two model, **Membership Model** and **IndividualMember Model**.
+
++  Membership Model
+
+  Property             | Type                | Description                       | Notes
+  -------------------- | --------------------| ----------------------------------| -------------
+  id                   | int                 | Membership ID.                    | 
+  startDate            | timestamp           | Membership start date.            | 
+  feature              | boolean             | Is featured.                      | 
+  membershipType       | int                 | Membership Type.                  | 
+
++  IndividualMember Model
+
+  Property             | Type                | Description                       | Notes
+  -------------------- | --------------------| ----------------------------------| -------------
+  id                   | boolean             | Member ID.                        | 
+  membershipId         | int                 | Membership ID.                    | 
+  image                | Image Model         | Member profile picture.           | 
+  givenName            | Member Model        | Member given name.                | 
+  familyName           | int                 | Member family name.               |
+  companyName          | string              | Member company name.              |
+  postionTitle         | Location Model      | Member position title.            |
+  industry             | phone               | Industry code reference.          | 
+  address              | Image Model         | Member address.                   | 
+  emailAddress         | string              | Member email.                     |
+  phone                | phone               | Member phone.                     |
+  
+  
+
+
+### Membership Type Model
+
+Sample Code:
+```
+{
+    "id": 702,
+    "organizationId": 2040,
+    "title": "Membership Type Name eg.",
+    "internalTitle": "Internal Membership Type Name eg.",
+    "type": "People",
+    "description": "<p>Membership Description eg.</p>",
+    "status": "Active",
+    "approvalRequired": true,
+    "renewalApprovalRequired": true,
+    "renewalConfirmRequired": true,
+    "memberApprovalRequired": false,
+    "activationRequired": true,
+    "index": 4,
+    "defaultLanguageCode": "en",
+    "languageCode": "en",
+    "renewalCreationPeriod": 30,
+    "gracePeriod": 30,
+    "gracePeriodEnabled": true,
+    "showInDirectory": true,
+    "createdOn": 1572257697000,
+    "lastModified": 1572257992000,
+    "activeVersions": [ ... ],
+    "public": true
+}
+```
+
+  Property                    | Type                                  | Description
+  --------------------------- | ------------------------------------- | ---------------------------------------
+  id                          | Int                                   | Membership type id
+  organizationId              | Int                                   | Organization id
+  title                       | String                                | Show for customer
+  internalTitle               | String                                | Internal title for staff
+  type                        | MembershipTypeEnum                    | `Company, People`
+  description                 | String                                | Description for this membership type
+  status                      | MembershipTypeStateEnum               | `Draft, Active, Inactive, Recycled`
+  approvalRequired            | Boolean                               | Is this membership type need approval
+  renewalApprovalRequired     | Boolean                               | Is renewal need staff approval
+  renewalConfirmRequired      | Boolean                               | Is renewal need staff confirm
+  memberApprovalRequired      | Boolean                               | Is member required approval
+  activationRequired          | Boolean                               | Is activation need manually do
+  index                       | Int                                   | List order
+  defaultLanguageCode         | String                                | Default language
+  languageCode                | String                                | Language
+  public                      | Boolean                               | Is public membership type
+  renewalCreationPeriod       | Int                                   | Renewal allows the creation time before the end of the membership (day)
+  gracePeriod                 | Int                                   | Grace Period time (day)
+  gracePeriodEnabled          | Boolean                               | Is enable grace period
+  showInDirectory             | Boolean                               | Should it show in membership directory
+  createdOn                   | Long                                  | Created time in epoch milli
+  lastModified                | Long                                  | Last modified time in epoch milli
+  activeVersions              | List&lt;MembershipTypeVersion&gt;     | The active membership type version, See Membership Type Version Model
+
+
++ Membership Type Version Model
+
+Sample Code:
+```
+{
+    "organizationId": 2040,
+    "membershipTypeId": 702,
+    "version": 1,
+    "status": "Current",
+    "duration": 12,
+    "memberLimit": 0,
+    "defaultCurrencyCode": "CNY",
+    "free": false,
+    "additionalMembersAllowed": false,
+    "additionalMembersFree": true,
+    "additionalMembersLimit": 0,
+    "extraMembersPriceEnabled": false,
+    "newTermFixedDate": true,
+    "newTermFixedDay": 1,
+    "newTermFixedMonth": "JANUARY",
+    "proRataEnabled": true,
+    "proRataStartFrom": "JANUARY",
+    "proRataTermSection": "Month",
+    "proRataPriceRounding": "Current",
+    "crossTermEnabled": true,
+    "crossTermPeriod": 30,
+    "crossTermExcludeCurrentPrice": true,
+    "createdOn": 1572257697000,
+    "lastModified": 1572257992000,
+    "prices": [ ... ],
+    "taxes": [ ... ],
+    "invoice": { ... },
+    "extraFee": { ... },
+    "discount": { ... },
+    "additionalMembersPrices": [ ... ],
+    "extraMembersPrices": [ ... ]
+}
+```
+
+  Property                       | Type                               | Description
+  ------------------------------ | ---------------------------------- | -----------------------------
+  organizationId                 | Int                                | Organization id
+  membershipTypeId               | Int                                | Membership type id
+  version                        | Int                                | Version
+  status                         | MembershipTypeVersionStateEnum     | `Draft, Scheduled, InProgress, Current, Past`
+  schedulerTime                  | Long                               | Planned effective time
+  duration                       | Int                                | How long dose this membership type version effect
+  memberLimit                    | Int                                | Member limit count
+  defaultCurrencyCode            | String                             | Default currency
+  free                           | Boolean                            | Is free
+  additionalMembersAllowed       | Boolean                            | Is allow additional member
+  additionalMembersFree          | Boolean                            | Additional member fee
+  additionalMembersLimit         | Int                                | Additional member count limit
+  extraMembersPriceEnabled       | Boolean                            | Extra members price enabled or not
+  newTermFixedDate               | Boolean                            | New term fixed date
+  newTermFixedDay                | Byte                               | New term fixed day
+  newTermFixedMonth              | Month                              | New term fixed moth
+  proRataEnabled                 | Boolean                            | Is Pro Rata Enabled
+  proRataStartFrom               | Month                              | Pro Rata Start From
+  proRataTermSection             | ProRataTermSectionEnum             | Pro Rata Term Section `Month, Quarter, Biannual`
+  proRataPriceRounding           | ProRataPriceRoundingEnum           | Pro Rata Price Rounding ` Current, Next, Closest`
+  crossTermEnabled               | Boolean                            | Cross term enabled
+  crossTermPeriod                | Short                              | Cross term period
+  crossTermExcludeCurrentPrice   | Boolean                            | Cross term exclude current price
+  existingApplications           | MembershipTypeVersionOptionsEnum   | `Now, OnScheduledTime, No`
+  newApplications                | MembershipTypeVersionOptionsEnum   | `Now, OnScheduledTime, No`
+  existingRenewals               | MembershipTypeVersionOptionsEnum   | `Now, OnScheduledTime, No`
+  newRenewals                    | MembershipTypeVersionOptionsEnum   | `Now, OnScheduledTime, No`
+  crossTermApplicable            | Boolean                            | Cross term applicable
+  proRataCalculationDate         | Long                               | Pro Rata Calculation Date
+  currentStartDate               | Long                               | Current start date
+  nextStartDate                  | Long                               | New start date
+  createdOn                      | Long                               | Created time in epoch milli
+  lastModified                   | Long                               | Last modified time in epoch milli
+  prices                         | List&lt;Price&gt;                  | Price list, See Price Model
+  taxes                          | List&lt;MembershipTypeTax&gt;      | Tax list, See Membership Type Tax Model
+  invoice                        | MembershipTypeInvoice              | Invoice info, See Membership Type Invoice Model
+  extraFee                       | MembershipTypeCharge               | Extra fee info, See Membership Type Charge Model
+  discount                       | MembershipTypeCharge               | Discount info, See Membership Type Charge Model
+  chapterPriceType               | MembershipTypeChapterPriceType     | Chapter price type `Fixed, Volume, Graduated`
+  chapters                       | MembershipTypeChapterPrice         | Chapters and price(Fixed) info, See Membership Type Chapter Price Model
+  chapterPriceRules              | MembershipTypeChapterPriceRule     | Chapters price rule(Volume, Graduated) list, See Membership Type Chapter Price Rule Model
+  additionalMembersPrices        | List&lt;Price&gt;                  | Additional members prices list, See Price Model
+  extraMembersPrices             | List&lt;Price&gt;                  | Extra members price list, See Price Model
+
+
++ Membership Type Chapter Price Model
+
+The price property only exists if chapter price type is Fixed.
+
+Sample Code:
+```
+{
+  "price": {
+    "currency": {
+      "code": "USD"
+    },
+    "value": 100
+  },
+  "chapterId": 2660
+}
+```
+
+  Property                | Type              | Description
+  ----------------------- | ----------------- | -------------------------
+  price                   | -                 | the fixed price info of this chapter
+  chapterId               | Integer           | chapter organization id
+
+
++ Membership Type Chapter Price Rule Model
+
+This model only for volume and graduated chapter price type, See Membership Type Chapter Price Model for fixed price info. 
+
+Sample Code:
+```
+{
+  "price": {
+    "currency": {
+      "code": "USD"
+    },
+    "value": 100
+  },
+  "minChapterCount": 1,
+  "maxChapterCount": 1
+}
+```
+
+  Property                | Type              | Description
+  ----------------------- | ----------------- | -------------------------
+  price                   | -                 | the price info of this rule
+  minChapterCount         | Integer           | minimum chapter count in this rule
+  maxChapterCount         | Integer           | maximum chapter count in this rule
+
+
+
++ Membership Type Tax Model
+
+Sample Code:
+```
+{
+    "membershipTypeId": 371,
+    "membershipTypeVersion": 1,
+    "internalName": "Test",
+    "title": "Test",
+    "internalTitle": "Test",
+    "percentage": 22,
+    "applyToAll": true,
+    "publicName": "Test",
+    "organizationId": 141,
+    "id": 26
+}
+```
+
+  Property                | Type              | Description
+  ----------------------- | ----------------- | -------------------------
+  membershipTypeId        | Integer           | Membership type id
+  membershipTypeVersion   | Integer           | Membership type version
+  internalName            | String            | Internal name
+  title                   | String            | Title
+  internalTitle           | String            | Internal title
+  percentage              | BigDecimal        | Percentage
+  applyToAll              | Boolean           | Apply to all
+  publicName              | String            | Public name
+  organizationId          | Integer           | Organization id
+  id                      | Integer           | Id
+
+
+
+
+
++ Membership Type Invoice Model
+
+Sample Code:
+```
+{
+    "isInvoiceApplicantCharged": true,
+    "isBTInvoiceEnabled": false,
+    "btInvoiceChargePercentage": 0.00,
+    "isVATGeneralInvoiceEnabled": true,
+    "vatGeneralInvoiceChargePercentage": 1.00,
+    "vatGeneralInvoiceMinimumAmount": 2.00,
+    "isVATSpecialInvoiceEnabled": true,
+    "vatSpecialInvoiceChargePercentage": 3.00,
+    "vatSpecialInvoiceMinimumAmount": 4.00
+}
+```
+
+  Property                           | Type          | Description
+  ---------------------------------- | ------------- | ----------------------------------------
+  isInvoiceApplicantCharged          | Boolean       | Is invoice application charged
+  isBTInvoiceEnabled                 | Boolean       | Is BT invoice enable
+  btInvoiceChargePercentage          | BigDecimal    | BT invoice charge percentage
+  isVATGeneralInvoiceEnabled         | Boolean       | Is VAT General Invoice Enabled
+  vatGeneralInvoiceChargePercentage  | BigDecimal    | VAT General Invoice Charge Percentage
+  vatGeneralInvoiceMinimumAmount     | BigDecimal    | VAT General Invoice Minimum Amount
+  isVATSpecialInvoiceEnabled         | Boolean       | Is VAT special Invoice Enabled
+  vatSpecialInvoiceChargePercentage  | BigDecimal    | VAT special Invoice charge Percentage
+  vatSpecialInvoiceMinimumAmount     | BigDecimal    | VAT special Invoice Minimum Amount
+
+
+
+
++ Price Model
+
+Sample Code:
+```
+{
+    "id": 2107,
+    "currency": "CNY",
+    "price": 33.00
+}
+```
+
+  Property   | Type        | Description
+  ---------- | ----------- | -------------------------
+  id         | Int         | Price Id
+  currency   | String      | Currency Code
+  price      | BigDecimal  | Price
+
+
+
+
++ Membership Type Charge Model
+
+Sample Code:
+```
+{
+    "application": { ... },
+    "renewal": { ... }
+}
+```
+
+  Property      | Type                          | Description
+  ------------- | ----------------------------- | -------------------------
+  application   | MembershipTypeChargeDetails   | Membership application charge details, See Membership Type Charge Details Model
+  renewal       | MembershipTypeChargeDetails   | Membership renewal charge details, See Membership Type Charge Details Model
+
+
+
+
++ Membership Type Charge Details Model
+
+Sample Code:
+```
+{
+    "percentage": 0.02,
+    "prices": [ ... ],
+    "proRataEnabled": false
+}
+```
+
+  Property         | Type         | Description
+  ---------------- | ------------ | -------------------------
+  percentage       | BigDecimal   | Membership type charge percentage
+  prices           | List&lt;Price&gt;  | Membership type charge price info, See Price Model
+  proRataEnabled   | Boolean      | Is pro Rata Enabled
+
+
+
+### Person Model
+The Person model is used when you have a person type of information, like a user, a contact etc…
+```
+"publicContact": {
+    "givenName": "David", 
+    "familyName": "Milo", 
+    "phoneNumbers": [
+        {
+            "value": "+86 18612341234"
+        }
+    ], 
+    "emailAddresses": [
+        {
+            "value": "david.milosevic@glueup.com"
+        }
+    ]
+}
+```
+
+  Property             | Type                | Description                       | Notes
+  -------------------- | --------------------| ----------------------------------| -------------
+  givenName            | string              | Person’s given name.              | 
+  familyName           | string              | Person's family name.             |
+  emailAddresses       | email               | Person's email.                   |Returns a list of emails.
+  phoneNumbers         | phone               | Person’s phone.                   |Returns a list of phones.
+
+### Reference Data Model
+The Reference Data model is used to retrieve a list of a specific property options in a specific language.
+For example you can request the list of options for “eventType” in Chinese.
+
+```
+"value": [
+    {
+        "code": "en", 
+        "name": "English"
+    }, 
+    {
+        "code": "zh", 
+        "name": "中文"
+    }
+]
+```
+
+  Property             | Type                | Description                       | Notes
+  -------------------- | --------------------| ----------------------------------| -------------
+  code                 | string              | Unique identifier for this option.| 
+  name                 | string              | Name in the requested language for this option.|
+  
+
+

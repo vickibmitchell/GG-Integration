@@ -1,0 +1,10 @@
+# ICFWA GlueUp Sync — Python Dependencies
+# Install with: pip3 install -r requirements.txt --break-system-packages
+
+# Excel file reading and writing (ICF Global export, GlueUp import file)
+openpyxl>=3.1.0
+
+# Google Drive upload (used by ICFGlueUpSync.py)
+google-api-python-client>=2.100.0
+google-auth-httplib2>=0.1.1
+google-auth-oauthlib>=1.1.0
