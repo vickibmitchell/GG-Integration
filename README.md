@@ -1,8 +1,9 @@
-# ICFWA GlueUp Member Sync
+# ICF Chapter GlueUp Member Sync
 
-**Organization:** ICF Washington State Chapter (ICFWA)  
-**Account:** technology@icfwashingtonstate.org  
-**GlueUp Org ID:** 7912  
+> **Developed by ICF Washington State Chapter (ICFWA).**
+> This project is shared under the MIT License for use and adaptation by other ICF chapters
+> considering a migration to GlueUp. See [Adapting for Your Chapter](#adapting-for-your-chapter).
+
 **Current Phase:** Phase 0 — Permanent operational state (see [Phase Status](#phase-status))
 
 ---
@@ -12,6 +13,12 @@
 This project syncs ICF Global chapter member records into GlueUp. Each month, ICF Global publishes a member export. This toolset compares that export against the current GlueUp membership list, identifies new and changed records, and produces import-ready files for manual upload via the GlueUp Admin UI.
 
 All sync and deduplication logic anchors on **ICF Global Member ID** — never on email address.
+
+Key constraints this toolset handles:
+- Members without a shared email address require a **shadow email** (proxy key) to satisfy GlueUp's unique email requirement
+- GlueUp member records are immutable once written — updates require creating a new record and cancelling the old one
+- GlueUp custom fields use property keys (not display names) in API payloads
+- GlueUp authentication uses a custom HMAC-SHA256 scheme
 
 ---
 
@@ -30,7 +37,7 @@ All sync and deduplication logic anchors on **ICF Global Member ID** — never o
 ## Repository Structure
 
 ```
-icfwa-glueup-sync/
+icf-glueup-sync/
 ├── README.md
 ├── requirements.txt
 ├── .env.example                    # Template for required credentials
@@ -83,7 +90,7 @@ pip3 install -r requirements.txt --break-system-packages
 cp .env.example .env
 ```
 
-Edit `.env` and fill in the GlueUp public and private keys. The scripts currently read these values from the source directly — this file is a reference for future refactoring.
+Edit `.env` and fill in your chapter's GlueUp public and private keys and other org-specific values. See [Adapting for Your Chapter](#adapting-for-your-chapter) for the full list of values to replace.
 
 ### 2. Authenticate to GlueUp
 
@@ -114,7 +121,7 @@ Before Drive upload will work, `credentials.json` must be present in the working
 | Step | Who | Action |
 |---|---|---|
 | 1 | Admin | Log in to ICF Global portal and download the chapter member export as `.xlsx`. Close the file before proceeding. |
-| 2 | Admin | Place the `.xlsx` file in the **Inbound** Google Drive folder (Shared Drive: Data Transfer > Inbound). |
+| 2 | Admin | Place the `.xlsx` file in your chapter's **Inbound** Google Drive folder. |
 | 3 | Admin | Run `python3 scripts/ICFGlueUpSync.py <file.xlsx>` |
 | 4 | Admin | Review `comparison_report_*.xlsx` Summary tab — note NEW / CHANGED / SAME counts. |
 | 5 | Admin | Review `dropped_members_*.xlsx` — cancel dropped memberships in GlueUp Admin UI. |
@@ -141,32 +148,41 @@ Before Drive upload will work, `credentials.json` must be present in the working
 
 ---
 
-## Key Credentials & Services
+## Adapting for Your Chapter
 
-| Service | Account | Notes |
+The following values are chapter-specific and must be updated before use. Search the scripts for these placeholders or hardcoded values and replace with your chapter's equivalents.
+
+| What | Where to find it | Used in |
 |---|---|---|
-| GlueUp | technology@icfwashingtonstate.org | Public/private keys in password manager |
-| Google Drive | technology@icfwashingtonstate.org | Connected via Make Google Drive module |
-| Google Apps Script | technology@icfwashingtonstate.org | script.google.com — GlueUp Auth project |
-| Audit Log Google Sheet | ICFWA GlueUp Sync Audit Log | Sheet ID: `1nFFwdkesEjeHxmIdGdBqr7iwL4kRO_RaZPBU5mz6W8M` |
-| GlueUp Support | support@glueup.com | |
-| ICF Global API Support | support@coachingfederation.org | Contact: Megan Paulini |
+| GlueUp public key | GlueUp Admin > API Settings | `GetToken.py`, `.env` |
+| GlueUp private key | GlueUp Admin > API Settings | `GetToken.py`, `.env` |
+| GlueUp Org ID | GlueUp Admin > Organization Settings | `ICFGlueUpSync.py`, `.env` |
+| GlueUp account email | Your chapter's GlueUp admin email | `GetToken.py` |
+| GlueUp password MD5 hash | Generate from your GlueUp password | `GetToken.py` |
+| Google Drive Inbound folder ID | Google Drive URL when folder is open | `ICFGlueUpSync.py`, `.env` |
+| Google Drive Sync Output folder ID | Google Drive URL when folder is open | `ICFGlueUpSync.py`, `.env` |
+| GlueUp import template | Export from your GlueUp Admin UI | `ICFGlueUpSync.py` |
 
----
-
-## Google Drive Folder IDs
-
-| Folder | ID |
-|---|---|
-| Sync Output Folder | `1BQ53mlYzkl3N5wz6AiTZm1kDpibempJy` |
-| Inbound Folder | Shared Drive: Data Transfer > Inbound |
+> **Important:** After updating credentials, run `python3 scripts/GetFieldCodes.py --print` to verify that your chapter's GlueUp custom field keys match what the scripts expect. Field keys vary between GlueUp organizations and the scripts must be updated to match yours.
 
 ---
 
 ## Related Documentation
 
-- `docs/GlueUp_Sync_Design_Spec_v3_5.docx` — full design specification
-- `docs/GlueUp_Sync_Make_Operations_Guide_v1_2.docx` — Make.com scenario reference
-- `docs/Chapter_API_SOAL_Documentation_FINAL_1.pdf` — ICF Global SOAP API spec
+- `docs/GlueUp_Sync_Design_Spec_v3_5.docx` — full design specification including shadow email design, field mapping, and open items log
+- `docs/GlueUp_Sync_Make_Operations_Guide_v1_2.docx` — Make.com scenario reference for Phase 1
+- `docs/Chapter_API_SOAL_Documentation_FINAL_1.pdf` — ICF Global SOAP API spec (provided by ICF Global)
 - `docs/glueupapi__3__apib.txt` — GlueUp API v2 Blueprint
 - GlueUp API v2 (online): https://glueupapi.docs.apiary.io/
+
+---
+
+## Contributing
+
+This project was built specifically for the ICFWA use case but is intended to be generally useful for any ICF chapter moving to GlueUp. If you adapt it for your chapter and improve it, pull requests are welcome. Please document any assumptions that are specific to your chapter's GlueUp configuration so others can follow.
+
+---
+
+## License
+
+MIT License — see `LICENSE` for details.
