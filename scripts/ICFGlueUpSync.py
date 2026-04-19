@@ -1,9 +1,130 @@
 """
-ICFGlueUpSync.py  —  v1.4  (2026-04-01)
+ICFGlueUpSync.py  —  v1.6.1  (2026-04-18)
 ICF Washington State Chapter — GlueUp Member Sync Comparison Tool
 
 CHANGELOG
 ---------
+v1.6.1  2026-04-18
+  - Removed 'creation date' → 'Chapter_Start_Date' alias from HEADER_ALIASES.
+    The Make CSV has both a real 'Chapter_Start_Date' column (col L, populated)
+    and a legacy 'Creation Date' column appended at position 22 (blank). The
+    alias caused the blank legacy column to overwrite the real value, making
+    Chapter_Start_Date appear blank and triggering the endDate-1yr fallback for
+    all members. This produced incorrect Membership Start Dates in the import
+    file, causing 121 spurious duplicate records in GlueUp today. The real
+    column ('chapter_start_date') still maps correctly without the alias.
+
+v1.6.0  2026-04-18
+  - Expanded COUNTRY_CODES from 5 entries to 80+ covering all commonly seen
+    countries in ICF member data. The SOAP API returns full country names
+    (e.g. "JAPAN") but GlueUp requires 2-letter ISO codes (e.g. "JP") —
+    previously unmapped countries passed through as full names and caused
+    GlueUp import failures. ESTONIA added so Elena Raudsepp's shifted row
+    continues to be caught as non-standard.
+  - Added _map_country() helper used by write_import_file for Country/Region.
+    Prints a named warning to stdout for any country not in COUNTRY_CODES,
+    making unmapped values visible rather than silently wrong.
+  - KNOWN_COUNTRIES in read_icf_file now derives automatically from
+    COUNTRY_CODES keys and values — no longer a separate duplicate list.
+
+v1.5.9  2026-04-18
+  - Non-standard record detection: some ICF Global members (e.g. Estonian
+    addresses) have an extra address sub-field in the SOAP response that shifts
+    all subsequent columns one position to the right, producing garbled data.
+    read_icf_file() now checks whether the Country field contains a recognised
+    value; if not, the row is flagged as non-standard, excluded from both
+    comparison and import, and reported on a new "Non-Standard Records" sheet
+    in the comparison report with the reason and a note to import manually.
+    KNOWN_COUNTRIES covers all countries currently seen in the member data
+    plus common additions; add entries as new countries appear.
+
+v1.5.8  2026-04-18
+  - Fixed "20 Cells found for column startDate with missing mandatory information"
+    GlueUp error. Membership Start Date was always blank because the SOAP API
+    does not reliably return Chapter_Start_Date. Added _derive_start_date()
+    helper that subtracts one year from the expiration date as a fallback.
+    Both Membership Start Date and ICF Global Membership Start Date now use:
+    Chapter_Start_Date if available, otherwise expiry_date minus one year.
+
+v1.5.7  2026-04-18
+  - Skip ICF Credential and TC Credential comparison when ICF Global returns
+    blank but GlueUp has a value. The SOAP API drops credentials that have
+    expired, so a blank is not a signal to overwrite GlueUp's historical data.
+    Previously only the credential date fields were skipped; now the credential
+    code fields themselves (ICF Credential, TC Credential) are skipped too.
+
+v1.5.6  2026-04-18
+  - Removed dead code: US_STATE_ABBREVS table and the State/Province
+    normalization in extract_icf_fields are no longer needed since State is
+    not compared. Import file passes through whatever the SOAP API provides
+    (abbreviation e.g. 'WA'), which is the desired behaviour — members in
+    other countries/states will get whatever ICF Global returns for them.
+
+v1.5.5  2026-04-18
+  - Removed State/Province from COMPARISON_FIELDS entirely.
+    GlueUp stores inconsistent values ('WA' vs 'Washington') depending on
+    import history, and the field is not in the GlueUp import template so it
+    cannot drive a meaningful CHANGED classification. The per-comparison
+    State/Province normalization block in compare_records is also removed.
+    Field is still captured in the comparison report for reference.
+
+v1.5.4  2026-04-18
+  - Hotfix: State normalization was applied to the ICF side only, but GlueUp
+    is the side returning the full name (e.g. "Washington"). The comparison
+    loop now normalizes BOTH sides to 2-letter abbreviation via US_STATE_ABBREVS
+    before comparing, so the direction of the mismatch doesn't matter.
+
+v1.5.3  2026-04-18
+  - State normalization updated: the ICF Global SOAP API returns full state
+    names (e.g. "Washington") while the manual XLS export returned abbreviations
+    (e.g. "WA"). extract_icf_fields() now looks up the full name in a
+    US_STATE_ABBREVS table and converts it to a 2-letter code before comparison,
+    matching how GlueUp stores the value. If the value is already an abbreviation
+    (2 chars or not found in the table), it is uppercased and kept as-is.
+    Added US_STATE_ABBREVS constant covering all 50 states plus DC and territories.
+
+v1.5.2  2026-04-18
+  - Removed Chapter_Start_Date (Creation Date) from COMPARISON_FIELDS.
+    The ICF Global SOAP API does not reliably return this field (it is blank
+    in the Make CSV output), causing every record to appear CHANGED when
+    compared against the value stored in GlueUp. Per the design spec, Creation
+    Date was always excluded from the fingerprint — it does not change once set.
+    The field is still written to the import file via icf('Chapter_Start_Date').
+  - Removed the DATE_TOLERANCE entry for 'Creation Date' (no longer compared).
+
+v1.5.1  2026-04-18
+  - Hotfix: the actual CSV produced by the Make scenario uses a mix of old
+    manual-export header names (e.g. "Member ID", "First Name", "Expiration Date")
+    and new API-derived names (e.g. "Chapter_Start_Date", "ACTC_Credential").
+    read_icf_file() now applies a HEADER_ALIASES map that normalises any known
+    alias to the canonical name the rest of the script expects, so both old and
+    new header formats are accepted transparently. Unrecognised headers pass
+    through unchanged and are logged to stdout.
+
+v1.5  2026-04-18
+  - Input file changed from .xlsx (PC sheet) to .csv produced by the Make
+    "Get Active Members" scenario (activemembers_YYYYMMDD.csv in Data-Transfer
+    > Inbound shared Drive folder).
+  - Updated find_latest_icf_file() to search for *activemembers*.csv instead
+    of *activemembers*.xlsx.
+  - Updated read_icf_file() to use csv.DictReader instead of openpyxl; file
+    now has a single header row (row 1) with no skip rows.
+  - Column names updated to match the Make scenario output headers:
+      Member ID           → Member_ID
+      First Name          → First_Name
+      Last Name           → Last_Name
+      Creation Date       → Chapter_Start_Date / Membership_Join_Date
+      Expiration Date     → Membership_Expiration_Date
+      Credential          → Flagship_Credential
+      Team Coaching Credential → ACTC_Credential
+      TC Award/Expire Date → ACTC_Credential_Award/Expire_Date
+      Reinstate/Rejoin    → Rejoin
+      Auto Renewal        → Auto_Renewal
+  - COMPARISON_FIELDS icf_column_name entries updated to new header names.
+  - Date normalisation updated for MM/DD/YYYY format written by Make.
+  - Member ID and Zip float-guard updated for CSV string values.
+  - Command-line help text updated to reference .csv.
+
 v1.4  2026-04-01
   - Fixed duplicate classification: use native membership.endDate timestamp
     instead of icfglobalmembershipenddate custom field to determine whether
@@ -42,7 +163,8 @@ v1.0  2026-03-31
 
 PURPOSE
 -------
-1. Reads the ICF Global member export XLS (PC sheet).
+1. Reads the ICF Global member export CSV produced by the Make scenario
+   "Get Active Members" (activemembers_YYYYMMDD.csv in Data-Transfer > Inbound).
 2. Pulls the full active member list from GlueUp via API.
 3. Compares records using ICF Global Member ID as the anchor key.
 4. Classifies every ICF Global record as: NEW, CHANGED, or SAME.
@@ -56,10 +178,10 @@ PURPOSE
 
 USAGE
 -----
-    python icf_glueup_sync_compare.py [path/to/icf_export.xlsx]
+    python ICFGlueUpSync.py [path/to/activemembers_YYYYMMDD.csv]
 
     If no file path is given, the script looks for the most recently
-    modified .xlsx in the current directory whose name contains
+    modified .csv in the current directory whose name contains
     "activemembers" (case-insensitive).
 
 CREDENTIALS
@@ -76,6 +198,7 @@ REQUIREMENTS
     pip install openpyxl requests
 """
 
+import csv
 import glob
 import hmac
 import hashlib
@@ -99,7 +222,7 @@ GLUEUP_SK       = os.environ.get('GLUEUP_SK',      'MF4CAQACEADAzyLnyJdLTnvVextU
 GLUEUP_MD5_PW   = os.environ.get('GLUEUP_MD5_PW',  '70bdb05ade647079069cfebed391758a')
 GLUEUP_EMAIL    = os.environ.get('GLUEUP_EMAIL',   'technology@icfwashingtonstate.org')
 
-SCRIPT_VERSION  = '1.4'
+SCRIPT_VERSION  = '1.6.1'
 
 # ──────────────────────────────────────────────────────────────────────────────
 # CONSTANTS
@@ -111,14 +234,95 @@ GLUEUP_MEMBERSHIP_TYPE_NAME = 'ICF Chapter Member'
 SHADOW_EMAIL_DOMAIN = 'members.icfwashingtonstate.org'
 
 # Country name → ISO 3166-1 alpha-2 code mapping.
-# Based on unique values found in the ICF Global export.
+# Keys are uppercase full names; values are 2-letter ISO codes as required
+# by GlueUp's import template. Add entries here when new countries appear
+# in the ICF Global export. The SOAP API returns full country names;
+# the import file requires 2-letter codes.
 COUNTRY_CODES = {
+    # Already-seen in ICF WA member data
     'UNITED STATES': 'US',
-    'CANADA':         'CA',
-    'CHINA':          'CN',
-    'SWEDEN':         'SE',
-    'UNITED KINGDOM': 'GB',
+    'CANADA':        'CA',
+    'CHINA':         'CN',
+    'SWEDEN':        'SE',
+    'UNITED KINGDOM':'GB',
+    'JAPAN':         'JP',
+    'ESTONIA':       'EE',
+    'AUSTRALIA':     'AU',
+    'GERMANY':       'DE',
+    'FRANCE':        'FR',
+    'NETHERLANDS':   'NL',
+    'BRAZIL':        'BR',
+    'INDIA':         'IN',
+    'SINGAPORE':     'SG',
+    'NEW ZEALAND':   'NZ',
+    'IRELAND':       'IE',
+    'DENMARK':       'DK',
+    'NORWAY':        'NO',
+    'FINLAND':       'FI',
+    'BELGIUM':       'BE',
+    'AUSTRIA':       'AT',
+    'SWITZERLAND':   'CH',
+    'SPAIN':         'ES',
+    'ITALY':         'IT',
+    'PORTUGAL':      'PT',
+    'MEXICO':        'MX',
+    'COLOMBIA':      'CO',
+    'CHILE':         'CL',
+    'ARGENTINA':     'AR',
+    'SOUTH AFRICA':  'ZA',
+    'KENYA':         'KE',
+    'NIGERIA':       'NG',
+    'ISRAEL':        'IL',
+    'UAE':           'AE',
+    'UNITED ARAB EMIRATES': 'AE',
+    'SAUDI ARABIA':  'SA',
+    'HONG KONG':     'HK',
+    'TAIWAN':        'TW',
+    'SOUTH KOREA':   'KR',
+    'KOREA':         'KR',
+    'THAILAND':      'TH',
+    'PHILIPPINES':   'PH',
+    'INDONESIA':     'ID',
+    'MALAYSIA':      'MY',
+    'VIETNAM':       'VN',
+    'PAKISTAN':      'PK',
+    'BANGLADESH':    'BD',
+    'SRI LANKA':     'LK',
+    'NEPAL':         'NP',
+    'GHANA':         'GH',
+    'ETHIOPIA':      'ET',
+    'EGYPT':         'EG',
+    'MOROCCO':       'MA',
+    'TURKEY':        'TR',
+    'GREECE':        'GR',
+    'POLAND':        'PL',
+    'CZECH REPUBLIC':'CZ',
+    'SLOVAKIA':      'SK',
+    'HUNGARY':       'HU',
+    'ROMANIA':       'RO',
+    'BULGARIA':      'BG',
+    'CROATIA':       'HR',
+    'SERBIA':        'RS',
+    'UKRAINE':       'UA',
+    'RUSSIA':        'RU',
+    'LATVIA':        'LV',
+    'LITHUANIA':     'LT',
+    'ICELAND':       'IS',
+    'LUXEMBOURG':    'LU',
+    'MALTA':         'MT',
+    'CYPRUS':        'CY',
+    'NEW CALEDONIA': 'NC',
+    'PERU':          'PE',
+    'ECUADOR':       'EC',
+    'VENEZUELA':     'VE',
+    'COSTA RICA':    'CR',
+    'PANAMA':        'PA',
+    'GUATEMALA':     'GT',
+    'DOMINICAN REPUBLIC': 'DO',
+    'JAMAICA':       'JM',
+    'TRINIDAD AND TOBAGO': 'TT',
 }
+
 
 # Google Drive — Sync Output folder
 DRIVE_SYNC_FOLDER_ID = '1BQ53mlYzkl3N5wz6AiTZm1kDpibempJy'
@@ -149,23 +353,29 @@ DRIVE_TOKEN_FILE     = 'drive_token.json'
 # GlueUp field paths for address sub-fields (stateName, countryName) are
 # approximate — verify against live API response if comparison results look wrong.
 COMPARISON_FIELDS = [
-    ('First Name',                           'individualMember.givenName',                         'First Name'),
-    ('Last Name',                            'individualMember.familyName',                        'Last Name'),
-    ('Email',                                'individualMember.emailAddress.value',                'Email'),
-    ('Phone',                                'individualMember.phone.value',                       'Phone'),
-    ('City',                                 'individualMember.address.cityName',                  'City'),
-    ('Zip',                                  'individualMember.address.zipCode',                   'Zip'),
-    ('State',                                'individualMember.address.province',               'State/Province'),
-    ('Country',                              'individualMember.address.country',                'Country/Region'),
-    ('Expiration Date',  'individualMember.properties.icfglobalmembershipenddate',   'Expiration Date'),
-    ('Creation Date',    'individualMember.properties.icfglobalmembershipstartdate', 'Creation Date'),
-    ('Credential',                           'individualMember.properties.icfcredential',          'ICF Credential'),
-    ('Credential Award Date',                'individualMember.properties.icfcredentialawarddate',      'ICF Credential Award Date'),
-    ('Credential Expire Date',               'individualMember.properties.icfcredentialexpiredate',     'ICF Credential Expire Date'),
-    ('Team Coaching\nCredential',            'individualMember.properties.icfteamcoachingcredential',   'TC Credential'),
-    ('Team Coaching\nCredential Award Date', 'individualMember.properties.icfteamcoachingcredentialaward',  'TC Award Date'),
-    ('Team Coaching\nCredential Expire Date','individualMember.properties.icfteamcoachingcredentialexpir',  'TC Expire Date'),
-    ('Auto Renewal',                         'individualMember.properties.icfglobalautorenewal',   'Auto Renewal'),
+    ('First_Name',                    'individualMember.givenName',                         'First Name'),
+    ('Last_Name',                     'individualMember.familyName',                        'Last Name'),
+    ('Email',                         'individualMember.emailAddress.value',                'Email'),
+    ('Phone',                         'individualMember.phone.value',                       'Phone'),
+    ('City',                          'individualMember.address.cityName',                  'City'),
+    ('Zip',                           'individualMember.address.zipCode',                   'Zip'),
+    # State/Province is intentionally excluded from comparison. GlueUp stores
+    # inconsistent values (e.g. 'WA' vs 'Washington') depending on import history,
+    # and the field is not in the GlueUp import template — it cannot drive a
+    # meaningful CHANGED classification. Captured in comparison report for reference.
+    # ('State', 'individualMember.address.province', 'State/Province'),
+    ('Country',                       'individualMember.address.country',                'Country/Region'),
+    ('Membership_Expiration_Date',    'individualMember.properties.icfglobalmembershipenddate',   'Expiration Date'),
+    # Creation Date (Chapter_Start_Date) is intentionally excluded from comparison —
+    # the SOAP API does not reliably return this field, and it never changes once set.
+    # It is still written to the import file via icf('Chapter_Start_Date') directly.
+    ('Flagship_Credential',           'individualMember.properties.icfcredential',          'ICF Credential'),
+    ('Credential_Award_Date',         'individualMember.properties.icfcredentialawarddate',      'ICF Credential Award Date'),
+    ('Credential_Expire_Date',        'individualMember.properties.icfcredentialexpiredate',     'ICF Credential Expire Date'),
+    ('ACTC_Credential',               'individualMember.properties.icfteamcoachingcredential',   'TC Credential'),
+    ('ACTC_Credential_Award_Date',    'individualMember.properties.icfteamcoachingcredentialaward',  'TC Award Date'),
+    ('ACTC_Credential_Expire_Date',   'individualMember.properties.icfteamcoachingcredentialexpir',  'TC Expire Date'),
+    ('Auto_Renewal',                  'individualMember.properties.icfglobalautorenewal',   'Auto Renewal'),
 ]
 
 # Columns in the GlueUp bulk import template (in order).
@@ -339,65 +549,253 @@ def index_glueup_by_member_id(glueup_members: list[dict]) -> dict[str, list[dict
 # ──────────────────────────────────────────────────────────────────────────────
 
 def find_latest_icf_file() -> str:
-    """Find the most recently modified activemembers xlsx in the CWD.
-    Skips Excel/Numbers lock files (prefixed with ~$).
+    """Find the most recently modified activemembers CSV in the CWD.
+    Skips lock files (prefixed with ~$).
     """
     candidates = [
         f for f in
-        glob.glob('*activemembers*.xlsx') + glob.glob('*ActiveMembers*.xlsx')
+        glob.glob('*activemembers*.csv') + glob.glob('*ActiveMembers*.csv')
         if not os.path.basename(f).startswith('~$')
     ]
     if not candidates:
         raise FileNotFoundError(
-            'No ICF Global member export found in current directory.\n'
-            'Pass the file path as an argument: python icf_glueup_sync_compare.py <file.xlsx>\n'
-            'Note: make sure the file is not open in Excel or Numbers.'
+            'No ICF Global member export CSV found in current directory.\n'
+            'Pass the file path as an argument: python ICFGlueUpSync.py <file.csv>\n'
+            'Expected filename pattern: activemembers_YYYYMMDD.csv'
         )
     return max(candidates, key=os.path.getmtime)
 
 
 def fmt_date(val) -> str:
-    """Normalise a date value to YYYY-MM-DD string, or empty string."""
-    if val is None:
+    """Normalise a date value to YYYY-MM-DD string, or empty string.
+    Handles:
+      - datetime / date objects
+      - YYYY-MM-DD strings (pass-through)
+      - MM/DD/YYYY strings written by the Make scenario
+    """
+    if val is None or val == '':
         return ''
     if isinstance(val, (datetime, date)):
         return val.strftime('%Y-%m-%d')
-    return str(val).strip()
+    s = str(val).strip()
+    if not s:
+        return ''
+    # MM/DD/YYYY → YYYY-MM-DD  (format written by Make Google Sheets module)
+    if len(s) == 10 and s[2] == '/' and s[5] == '/':
+        try:
+            return datetime.strptime(s, '%m/%d/%Y').strftime('%Y-%m-%d')
+        except ValueError:
+            pass
+    return s
+
+
+
+
+def _map_country(raw: str, member_id: str = '') -> str:
+    """
+    Convert a country name or code to the 2-letter ISO code GlueUp requires.
+    If the value is already a 2-letter code, return it uppercased.
+    If it maps via COUNTRY_CODES, return the mapped code.
+    Otherwise, print a warning and return the raw value so the problem
+    is visible in the import file rather than silently wrong.
+    """
+    val = (raw or '').strip()
+    if not val:
+        return ''
+    upper = val.upper()
+    # Already a 2-letter code
+    if len(upper) == 2:
+        return upper
+    # Look up full name
+    mapped = COUNTRY_CODES.get(upper)
+    if mapped:
+        return mapped
+    # Unknown — warn and pass through so the admin can see the issue
+    print(f'  ⚠  UNMAPPED COUNTRY: Member {member_id} has country "{val}" — '
+          f'not in COUNTRY_CODES. Add it to the table. Passing through as-is.')
+    return val
+
+
+def _derive_start_date(expiry_date_str: str) -> str:
+    """
+    Derive a membership start date from an expiration date by subtracting one
+    year. Used as a fallback when Chapter_Start_Date is blank (the SOAP API
+    does not reliably return it).
+    Returns a YYYY-MM-DD string, or '' if the expiry date cannot be parsed.
+    """
+    s = (expiry_date_str or '').strip()
+    if not s:
+        return ''
+    try:
+        dt = datetime.strptime(s, '%Y-%m-%d')
+        # Subtract one year, handling Feb-29 edge case
+        try:
+            start = dt.replace(year=dt.year - 1)
+        except ValueError:
+            # Feb 29 on a leap year — use Feb 28
+            start = dt.replace(year=dt.year - 1, day=28)
+        return start.strftime('%Y-%m-%d')
+    except ValueError:
+        return ''
 
 
 def read_icf_file(path: str) -> list[dict]:
     """
-    Read the PC sheet of the ICF Global export.
-    Row 1 = chapter title (skipped)
-    Row 2 = column headers
-    Row 3+ = data
-    Returns a list of dicts keyed by column header.
-    """
-    print(f'Reading ICF Global file: {path}')
-    wb = load_workbook(path, read_only=True, data_only=True)
-    ws = wb['PC']
+    Read the CSV produced by the Make "Get Active Members" scenario.
+    Row 1 = column headers (no skip rows).
+    Returns a list of dicts keyed by the canonical column names used
+    throughout this script (see HEADER_ALIASES below).
 
-    rows = list(ws.iter_rows(values_only=True))
-    headers = [str(h).strip() if h is not None else '' for h in rows[1]]  # row 2
+    The Make scenario CSV may use a mix of old manual-export header names
+    and new API-derived names. HEADER_ALIASES normalises either form to the
+    single canonical name the script expects, so both formats are accepted
+    without code changes.
+
+    Canonical names this function guarantees in every returned dict:
+        Member_ID, Status, First_Name, Last_Name, Role, Email, Phone,
+        City, State, Zip, Country, Chapter_Start_Date, Membership_Join_Date,
+        Membership_Expiration_Date, Rejoin, Auto_Renewal, Flagship_Credential,
+        Credential_Award_Date, Credential_Expire_Date, ACTC_Credential,
+        ACTC_Credential_Award_Date, ACTC_Credential_Expire_Date
+    """
+
+    # Maps any known alias → canonical name.
+    # Keys are stripped/lowercased for case-insensitive matching.
+    HEADER_ALIASES = {
+        # Member ID
+        'member id':                        'Member_ID',
+        'member_id':                        'Member_ID',
+        # Names
+        'first name':                       'First_Name',
+        'first_name':                       'First_Name',
+        'last name':                        'Last_Name',
+        'last_name':                        'Last_Name',
+        # Dates
+        'expiration date':                  'Membership_Expiration_Date',
+        'membership_expiration_date':       'Membership_Expiration_Date',
+        # NOTE: 'creation date' intentionally NOT aliased here.
+        # The Make CSV has both a real 'Chapter_Start_Date' column (col L)
+        # AND a legacy 'Creation Date' column appended at the end (col V) which
+        # is blank. Aliasing 'creation date' → 'Chapter_Start_Date' caused the
+        # blank legacy column to overwrite the real value. The real column maps
+        # correctly via 'chapter_start_date' below.
+        'chapter_start_date':               'Chapter_Start_Date',
+        'membership_join_date':             'Membership_Join_Date',
+        'credential award date':            'Credential_Award_Date',
+        'credential_award_date':            'Credential_Award_Date',
+        'credential expire date':           'Credential_Expire_Date',
+        'credential_expire_date':           'Credential_Expire_Date',
+        'actc_credential_award_date':       'ACTC_Credential_Award_Date',
+        'actc_credential_expire_date':      'ACTC_Credential_Expire_Date',
+        # Credentials
+        'credential':                       'Flagship_Credential',
+        'flagship_credential':              'Flagship_Credential',
+        'actc_credential':                  'ACTC_Credential',
+        # Other
+        'auto renewal':                     'Auto_Renewal',
+        'auto_renewal':                     'Auto_Renewal',
+        'rejoin':                           'Rejoin',
+        # Pass-through columns (already canonical, listed for documentation)
+        'status':   'Status',
+        'role':     'Role',
+        'email':    'Email',
+        'phone':    'Phone',
+        'city':     'City',
+        'state':    'State',
+        'zip':      'Zip',
+        'country':  'Country',
+    }
+
+    # Date columns (canonical names) written by Make in MM/DD/YYYY format
+    date_cols = {
+        'Chapter_Start_Date', 'Membership_Join_Date', 'Membership_Expiration_Date',
+        'Credential_Award_Date', 'Credential_Expire_Date',
+        'ACTC_Credential_Award_Date', 'ACTC_Credential_Expire_Date',
+    }
+
+    # Valid country values: all keys (full names) and values (2-letter codes)
+    # from COUNTRY_CODES. Anything else in the Country field suggests a
+    # column-shifted row (e.g. Estonian district pushing columns right).
+    KNOWN_COUNTRIES = set(COUNTRY_CODES.keys()) | set(COUNTRY_CODES.values())
+
+    print(f'Reading ICF Global file: {path}')
 
     records = []
-    for row in rows[2:]:  # row 3 onwards
-        if not any(row):  # skip completely blank rows
-            continue
-        rec = dict(zip(headers, row))
-        # Normalise dates to strings
-        for date_col in ('Creation Date', 'Expiration Date',
-                         'Credential Award Date', 'Credential Expire Date',
-                         'Team Coaching\nCredential Award Date',
-                         'Team Coaching\nCredential Expire Date'):
-            rec[date_col] = fmt_date(rec.get(date_col))
-        # Normalise Member ID to string
-        mid = rec.get('Member ID')
-        rec['Member ID'] = str(int(mid)) if mid is not None else ''
-        records.append(rec)
+    nonstandard = []  # rows with column-shift or other structural problems
+    with open(path, newline='', encoding='utf-8-sig') as fh:
+        reader = csv.DictReader(fh)
 
-    wb.close()
+        # Report which headers were found and how they were mapped
+        raw_headers = reader.fieldnames or []
+        mapped, unmapped = [], []
+        for h in raw_headers:
+            canonical = HEADER_ALIASES.get(h.strip().lower())
+            if canonical:
+                mapped.append(f'{h!r} → {canonical!r}')
+            else:
+                unmapped.append(repr(h))
+        print(f'  CSV headers recognised: {len(mapped)}, unrecognised (kept as-is): {len(unmapped)}')
+        if unmapped:
+            print(f'  Unrecognised headers (passed through): {", ".join(unmapped)}')
+
+        for row in reader:
+            # Skip completely blank rows
+            if not any(v.strip() for v in row.values()):
+                continue
+
+            # Remap headers to canonical names; unknown headers pass through
+            rec = {}
+            for k, v in row.items():
+                canonical = HEADER_ALIASES.get((k or '').strip().lower(), k)
+                rec[canonical] = (v.strip() if v is not None else '')
+
+            # Normalise dates to YYYY-MM-DD
+            for col in date_cols:
+                rec[col] = fmt_date(rec.get(col, ''))
+
+            # Normalise Member_ID: strip trailing .0 from numeric strings
+            # (Google Sheets may export integers as "12345.0")
+            mid = rec.get('Member_ID', '').strip()
+            if mid.endswith('.0'):
+                mid = mid[:-2]
+            rec['Member_ID'] = mid
+
+            # Zip: strip trailing .0 for the same reason
+            zip_val = rec.get('Zip', '').strip()
+            if zip_val.endswith('.0'):
+                zip_val = zip_val[:-2]
+            rec['Zip'] = zip_val
+
+            # Detect column-shifted rows: if Country doesn't look like a known
+            # country value, the address likely had an extra field (e.g. Estonian
+            # district) that pushed all subsequent columns one position to the right.
+            country_val = rec.get('Country', '').strip().upper()
+            if country_val and country_val not in KNOWN_COUNTRIES:
+                nonstandard.append({
+                    'Member_ID':  rec.get('Member_ID', ''),
+                    'First_Name': rec.get('First_Name', ''),
+                    'Last_Name':  rec.get('Last_Name', ''),
+                    'Country':    rec.get('Country', ''),
+                    'Reason':     (
+                        f'Unrecognised country value "{rec.get("Country", "")}" — '
+                        f'address may have an extra field causing column misalignment. '
+                        f'Review raw ICF Global record and import manually if needed.'
+                    ),
+                })
+                print(f'  ⚠  NON-STANDARD: Member {rec.get("Member_ID", "?")} '
+                      f'({rec.get("First_Name", "")} {rec.get("Last_Name", "")}) — '
+                      f'unrecognised country "{rec.get("Country", "")}", skipping.')
+                continue
+
+            records.append(rec)
+
+    if nonstandard:
+        print(f'  ⚠  {len(nonstandard)} non-standard record(s) skipped — '
+              f'see comparison report Non-Standard sheet.')
     print(f'  ✓ {len(records)} ICF Global records loaded.')
+    # Attach nonstandard list to the return value via a module-level variable
+    # so write_comparison_report can access it without changing all call sites.
+    read_icf_file._nonstandard = nonstandard
     return records
 
 
@@ -473,7 +871,9 @@ def extract_icf_fields(rec: dict) -> dict[str, str]:
 
     Country is converted from full name (e.g. 'UNITED STATES') to ISO code
     (e.g. 'US') to match how GlueUp stores it.
-    State is uppercased to match GlueUp storage.
+    State is normalized to a 2-letter abbreviation: if the SOAP API returns a
+    full name (e.g. 'Washington'), it is looked up in US_STATE_ABBREVS. If it
+    is already an abbreviation (e.g. 'WA'), it is uppercased and kept as-is.
     """
     result = {}
     for icf_col, _, label in COMPARISON_FIELDS:
@@ -482,11 +882,10 @@ def extract_icf_fields(rec: dict) -> dict[str, str]:
         # Normalize Country to ISO code to match GlueUp's coded field storage
         if label == 'Country/Region':
             str_val = COUNTRY_CODES.get(str_val.upper(), str_val)
-        # Normalize State to uppercase to match GlueUp storage
-        elif label == 'State/Province':
-            str_val = str_val.upper()
+        # State/Province is not compared (excluded from COMPARISON_FIELDS) —
+        # no normalization needed here.
         result[label] = str_val
-    result['ICF Global Member ID'] = rec.get('Member ID', '')
+    result['ICF Global Member ID'] = rec.get('Member_ID', '')
     return result
 
 
@@ -543,7 +942,7 @@ def compare_records(icf_records: list[dict],
     results = []
     skipped_shadow = []
     for rec in icf_records:
-        mid = rec.get('Member ID', '').strip()
+        mid = rec.get('Member_ID', '').strip()
         if not mid:
             print(f'  WARNING: skipping row with blank Member ID (row data: {rec})')
             continue
@@ -551,10 +950,10 @@ def compare_records(icf_records: list[dict],
         # Skip shadow-email members with no expiration date — they have no
         # useful data to import. Named warning printed for each.
         raw_email   = (rec.get('Email') or '').strip()
-        expiry_date = (rec.get('Expiration Date') or '').strip()
+        expiry_date = (rec.get('Membership_Expiration_Date') or '').strip()
         if not raw_email and not expiry_date:
-            fname = (rec.get('First Name') or '').strip()
-            lname = (rec.get('Last Name') or '').strip()
+            fname = (rec.get('First_Name') or '').strip()
+            lname = (rec.get('Last_Name') or '').strip()
             skipped_shadow.append((mid, fname, lname))
             continue
 
@@ -593,18 +992,20 @@ def compare_records(icf_records: list[dict],
 
         # Date fields where a small difference is tolerated (timezone drift etc.)
         # Key = comparison label, value = max tolerated difference in days.
-        DATE_TOLERANCE = {
-            'Creation Date': 30,
-        }
+        DATE_TOLERANCE: dict[str, int] = {}
 
-        # If ICF Global has no credential, skip the associated date fields —
-        # we preserve whatever dates GlueUp has so admins can see when
-        # credentials expired and send reminders.
+        # If ICF Global has no credential, skip the credential field and its
+        # associated date fields. The SOAP API drops credentials that have
+        # expired, so a blank from ICF Global does not mean the credential
+        # should be removed from GlueUp — we preserve whatever GlueUp has
+        # for historical reporting and admin awareness.
         icf_credential_blank     = _normalise(icf_fields.get('ICF Credential', '')) == ''
         icf_tc_credential_blank  = _normalise(icf_fields.get('TC Credential', '')) == ''
         SKIP_IF_CREDENTIAL_BLANK = {
+            'ICF Credential':             icf_credential_blank,
             'ICF Credential Award Date':  icf_credential_blank,
             'ICF Credential Expire Date': icf_credential_blank,
+            'TC Credential':              icf_tc_credential_blank,
             'TC Award Date':              icf_tc_credential_blank,
             'TC Expire Date':             icf_tc_credential_blank,
         }
@@ -627,13 +1028,6 @@ def compare_records(icf_records: list[dict],
                     continue
                 changed.append(label)
                 continue
-
-            # State/Province: skip for non-US members — international addresses
-            # don't use US-style state codes and would generate spurious CHANGED.
-            if label == 'State/Province':
-                icf_country = _normalise(icf_fields.get('Country/Region', ''))
-                if icf_country != 'us':
-                    continue
 
             icf_norm = _normalise(icf_val)
             glu_norm = _normalise(glu_val)
@@ -889,7 +1283,7 @@ def effective_email(icf_rec: dict) -> tuple[str, bool]:
     raw_email = (icf_rec.get('Email') or '').strip()
     if raw_email:
         return raw_email, True
-    mid = icf_rec.get('Member ID', '').strip()
+    mid = icf_rec.get('Member_ID', '').strip()
     shadow = f'id_{mid}@{SHADOW_EMAIL_DOMAIN}'
     print(f'  SHADOW EMAIL: Member {mid} has no email — using {shadow}')
     return shadow, False
@@ -935,7 +1329,7 @@ def write_comparison_report(results: list[dict],
     """
     print(f'Writing comparison report: {output_path}')
     if icf_records_by_id is None:
-        icf_records_by_id = {r.get('Member ID', ''): r for r in icf_records}
+        icf_records_by_id = {r.get('Member_ID', ''): r for r in icf_records}
     wb = Workbook()
 
     # ── Summary sheet ──────────────────────────────────────────────
@@ -1040,6 +1434,30 @@ def write_comparison_report(results: list[dict],
 
     _auto_width(ws_ch)
 
+    # ── Non-Standard Records sheet ────────────────────────────────
+    nonstandard = getattr(read_icf_file, '_nonstandard', [])
+    if nonstandard:
+        ws_ns = wb.create_sheet('Non-Standard Records')
+        ns_headers = ['Member ID', 'First Name', 'Last Name', 'Country Value', 'Reason']
+        ws_ns.append(ns_headers)
+        _header_row_style(ws_ns, 1, len(ns_headers), fill_color='FF0000')
+        warn_fill = PatternFill(fill_type='solid', fgColor='FCE4D6')
+        for ns in nonstandard:
+            ws_ns.append([
+                ns.get('Member_ID', ''),
+                ns.get('First_Name', ''),
+                ns.get('Last_Name', ''),
+                ns.get('Country', ''),
+                ns.get('Reason', ''),
+            ])
+            row_num_ns = ws_ns.max_row
+            for col in range(1, len(ns_headers) + 1):
+                ws_ns.cell(row=row_num_ns, column=col).fill = warn_fill
+        ws_ns.append([])
+        ws_ns.append(['These records were EXCLUDED from the import file. Review the raw '
+                      'ICF Global data and import manually if needed.'])
+        _auto_width(ws_ns)
+
     wb.save(output_path)
     print(f'  ✓ Comparison report saved.')
 
@@ -1086,36 +1504,42 @@ def write_import_file(results: list[dict],
             return icf_rec.get(col) or ''
 
         row = {
-            'Membership Start Date':               fmt_date(icf('Creation Date')),
-            'Membership End Date':                 fmt_date(icf('Expiration Date')),
+            'Membership Start Date':               (
+                # Use Chapter_Start_Date if available; fall back to one year
+                # before the expiration date when the SOAP API omits it.
+                fmt_date(icf('Chapter_Start_Date')) or _derive_start_date(icf('Membership_Expiration_Date'))
+            ),
+            'Membership End Date':                 fmt_date(icf('Membership_Expiration_Date')),
             'Currency':                            '',
-            'First Name':                          (icf('First Name') or '').strip(),
-            'Last Name':                           (icf('Last Name') or '').strip(),
+            'First Name':                          (icf('First_Name') or '').strip(),
+            'Last Name':                           (icf('Last_Name') or '').strip(),
             'Email':                               email,
             'Phone':                               (icf('Phone') or '').strip(),
             'Postal Code/Zip Code':                str(int(float(icf('Zip')))).strip() if icf('Zip') is not None and str(icf('Zip')).replace('.','',1).isdigit() else str(icf('Zip') or '').strip(),
             'Address':                             '',
             'City':                                (icf('City') or '').strip(),
             'State/Province':                      (icf('State') or '').strip(),
-            'Country/Region':                      COUNTRY_CODES.get((icf('Country') or '').strip().upper(), (icf('Country') or '').strip()),
+            'Country/Region':                      _map_country(icf('Country'), mid),
             'Volunteer Role':                      '',
             'Coach Industry':                      '',
             'Coach Specialty':                     '',
             'Findable':                            '',
             'Directory Listing Text':              '',
-            'ICF Credential':                      (icf('Credential') or '').strip().lower() or 'none',
+            'ICF Credential':                      (icf('Flagship_Credential') or '').strip().lower() or 'none',
             # Leave credential dates blank if ICF Global has no credential —
             # GlueUp will preserve its existing dates for historical reporting.
-            'ICF Credential Award Date':           fmt_date(icf('Credential Award Date')) if (icf('Credential') or '').strip() else '',
-            'ICF Credential Expire Date':          fmt_date(icf('Credential Expire Date')) if (icf('Credential') or '').strip() else '',
-            'ICF Global Auto Renewal':             (icf('Auto Renewal') or '').strip().lower(),
+            'ICF Credential Award Date':           fmt_date(icf('Credential_Award_Date')) if (icf('Flagship_Credential') or '').strip() else '',
+            'ICF Credential Expire Date':          fmt_date(icf('Credential_Expire_Date')) if (icf('Flagship_Credential') or '').strip() else '',
+            'ICF Global Auto Renewal':             (icf('Auto_Renewal') or '').strip().lower(),
             'ICF Global Member ID':                mid,
-            'ICF Global Membership End Date':      fmt_date(icf('Expiration Date')),
-            'ICF Global Membership Start Date':    fmt_date(icf('Creation Date')),
+            'ICF Global Membership End Date':      fmt_date(icf('Membership_Expiration_Date')),
+            'ICF Global Membership Start Date':    (
+                fmt_date(icf('Chapter_Start_Date')) or _derive_start_date(icf('Membership_Expiration_Date'))
+            ),
             'ICF Global Membership Type':          'individual',
-            'ICF Team Coaching Credential':        (icf('Team Coaching\nCredential') or '').strip().lower() or 'none',
-            'ICF Team Coaching Credential Award Date': fmt_date(icf('Team Coaching\nCredential Award Date')) if (icf('Team Coaching\nCredential') or '').strip() else '',
-            'ICF Team Coaching Credential Expire Date': fmt_date(icf('Team Coaching\nCredential Expire Date')) if (icf('Team Coaching\nCredential') or '').strip() else '',
+            'ICF Team Coaching Credential':        (icf('ACTC_Credential') or '').strip().lower() or 'none',
+            'ICF Team Coaching Credential Award Date': fmt_date(icf('ACTC_Credential_Award_Date')) if (icf('ACTC_Credential') or '').strip() else '',
+            'ICF Team Coaching Credential Expire Date': fmt_date(icf('ACTC_Credential_Expire_Date')) if (icf('ACTC_Credential') or '').strip() else '',
             'Has Email':                           'yes' if has_real_email else 'no',
             'ICF Global Import Date':              today,
         }
@@ -1352,8 +1776,8 @@ def main():
     parser.add_argument(
         'icf_file',
         nargs='?',
-        help='Path to the ICF Global member export .xlsx file. '
-             'If omitted, the most recent *activemembers*.xlsx in the current directory is used.',
+        help='Path to the ICF Global member export .csv file (activemembers_YYYYMMDD.csv). '
+             'If omitted, the most recent *activemembers*.csv in the current directory is used.',
     )
     parser.add_argument(
         '--import-mode',
@@ -1399,7 +1823,7 @@ def main():
 
     # Step 1: Read ICF Global file
     icf_records = read_icf_file(icf_path)
-    icf_by_id = {r['Member ID']: r for r in icf_records if r.get('Member ID')}
+    icf_by_id = {r['Member_ID']: r for r in icf_records if r.get('Member_ID')}
 
     # Step 2: Pull GlueUp data
     token = get_token()

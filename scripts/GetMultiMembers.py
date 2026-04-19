@@ -139,9 +139,15 @@ def ms_to_date(ms) -> str:
 
 def sort_key(record: dict) -> tuple:
     """
-    Sort key — newest icfimportdate first.
-    Records WITH icfimportdate sort before those without.
-    Tiebreaker: membershipId descending.
+    Sort key — record to KEEP sorts first (lowest tuple value).
+
+    Priority:
+      1. Records WITH icfimportdate before those without.
+      2. Most recent icfimportdate first.
+      3. When icfimportdate is the same (e.g. two records both imported today),
+         use endDate descending — the record with the LATER expiration date is
+         the correct renewal record and should be kept.
+      4. Final tiebreaker: membershipId descending.
 
     Returns a tuple that sorts correctly with sorted(...) default (ascending),
     so we negate numeric values and invert the has_import_date boolean.
@@ -149,10 +155,14 @@ def sort_key(record: dict) -> tuple:
     import_dt     = parse_glueup_date(record.get('icfimportdate', ''))
     has_import    = import_dt is not None
     import_ts     = import_dt.timestamp() if import_dt else 0
+
+    end_dt        = parse_glueup_date(record.get('endDate', ''))
+    end_ts        = end_dt.timestamp() if end_dt else 0
+
     membership_id = record.get('membershipId') or 0
 
-    # has_import=True should sort first → negate (False=0 < True=1, so negate flips)
-    return (not has_import, -import_ts, -membership_id)
+    # has_import=True should sort first → negate boolean
+    return (not has_import, -import_ts, -end_ts, -membership_id)
 
 
 def find_duplicates(all_records: list) -> dict:
