@@ -2,27 +2,29 @@
 """
 GlobalGlueUpSync.py
 ICF Washington State Chapter — GlueUp Member Sync
-Version: 1.0
+Version: 1.17
 
 Reads the ICF Global active-member CSV (produced by the Get Active Members
 Make scenario), looks up each member in GlueUp by email then by ICF Member ID,
 and produces five output files:
-  - contact_import_YYYYMMDD_HHMM.csv
-  - membership_import_YYYYMMDD_HHMM.csv
+  - contact_import_YYYYMMDD_HHMM.xlsx
+  - membership_import_YYYYMMDD_HHMM.xlsx
   - comparison_report_YYYYMMDD_HHMM.xlsx
   - duplicate_report_YYYYMMDD_HHMM.xlsx
   - run_log_YYYYMMDD_HHMM.txt
 
 Usage:
-  python3 GlobalGlueUpSync.py <file.csv>
-  python3 GlobalGlueUpSync.py <file.csv> --no-drive
-  python3 GlobalGlueUpSync.py <file.csv> --dry-run
+  python3 GlobalGlueUpSync.py               # auto-discovers most recent activemembers*.csv
+  python3 GlobalGlueUpSync.py <file.csv>    # use a specific file
+  python3 GlobalGlueUpSync.py --no-drive
+  python3 GlobalGlueUpSync.py --dry-run
 
 See GlueUp_Sync_Design_Spec for full field and logic documentation.
 """
 
 import argparse
 import csv
+import glob
 import hmac
 import hashlib
 import json
@@ -43,19 +45,45 @@ except ImportError:
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-GLUEUP_BASE_URL     = "https://api-services.glueup.com"
-GLUEUP_ORG_ID       = "7912"
-GLUEUP_PK           = "icfwshts"
-GLUEUP_SK           = "MF4CAQACEADAzyLnyJdLTnvVextU0XMCAwEAAQIQAKT41snxxRoPfXb0gguT2QIIDoAWHftn8h0CCA1L/8fNanzPAggAksHNF6ZpZQIIARa17LAfBfUCCAP67vZiAQ55"
+GLUEUP_BASE_URL           = "https://api-services.glueup.com"
+GLUEUP_ORG_ID             = "7912"
+GLUEUP_PK                 = "icfwshts"
+GLUEUP_SK                 = "MF4CAQACEADAzyLnyJdLTnvVextU0XMCAwEAAQIQAKT41snxxRoPfXb0gguT2QIIDoAWHftn8h0CCA1L/8fNanzPAggAksHNF6ZpZQIIARa17LAfBfUCCAP67vZiAQ55"
 GLUEUP_MEMBERSHIP_TYPE_ID = 37600
 
 SHADOW_EMAIL_DOMAIN = "members.icfwashingtonstate.org"
-TOKEN_FILE          = "token.json"
+TOKEN_FILE          = "glueup_token.json"
 DRIVE_FOLDER_ID     = None   # Open Item 6 — set when Drive upload is re-enabled
 
-RUN_TS              = datetime.datetime.now()
-RUN_DATE_MMDDYYYY   = RUN_TS.strftime("%m/%d/%Y")
-RUN_TS_STR          = RUN_TS.strftime("%Y%m%d_%H%M")
+RUN_TS            = datetime.datetime.now()
+RUN_DATE_MMDDYYYY = RUN_TS.strftime("%m/%d/%Y")
+RUN_TS_STR        = RUN_TS.strftime("%Y%m%d_%H%M")
+
+# ─── Input CSV column names (as output by the Make scenario) ──────────────────
+# These are the exact header strings Make writes to the CSV.
+COL_MEMBER_ID     = "Member ID"
+COL_STATUS        = "Status"
+COL_FIRST_NAME    = "First Name"
+COL_LAST_NAME     = "Last Name"
+COL_ROLE          = "Role"
+COL_EMAIL         = "Email"
+COL_PHONE         = "Phone"
+COL_CITY          = "City"
+COL_STATE         = "State"
+COL_ZIP           = "Zip"
+COL_COUNTRY       = "Country"
+COL_CHAPTER_START = "Chapter_Start_Date"
+COL_JOIN_DATE     = "Membership_Join_Date"
+COL_EXPIRY        = "Expiration Date"
+COL_REJOIN        = "Rejoin"
+COL_AUTO_RENEWAL  = "Auto Renewal"
+COL_CREDENTIAL    = "Credential"
+COL_CRED_AWARD    = "Credential Award Date"
+COL_CRED_EXPIRE   = "Credential Expire Date"
+COL_TC_CRED       = "ACTC_Credential"
+COL_TC_AWARD      = "ACTC_Credential_Award_Date"
+COL_TC_EXPIRE     = "ACTC_Credential_Expire_Date"
+COL_MEMBER_TYPE   = "Member_Type"   # optional — added to Make scenario later
 
 # ─── State / Province lookup (2-letter → full name) ───────────────────────────
 
@@ -89,26 +117,27 @@ STATE_LOOKUP = {
 # Loaded from ZipCodes_Areas_CCC.xlsx at runtime (see load_zip_region_lookup).
 # Key: (city_lower, zip_str) → region name
 # Falls back to zip-only match if city+zip not found.
-ZIP_REGION_LOOKUP   = {}   # populated by load_zip_region_lookup()
-ZIP_ONLY_LOOKUP     = {}   # populated by load_zip_region_lookup()
+ZIP_REGION_LOOKUP = {}   # populated by load_zip_region_lookup()
+ZIP_ONLY_LOOKUP   = {}   # populated by load_zip_region_lookup()
 
 # ─── Comparison fields (ICF Global col → GlueUp property key) ─────────────────
 # Used to build the comparison report diff.
 COMPARISON_FIELDS = [
-    # (label, icf_csv_col, glueup_property, transform_fn_name)
-    ("First Name",                  "First_Name",                   "givenName",                        "none"),
-    ("Last Name",                   "Last_Name",                    "familyName",                       "none"),
-    ("Email",                       "_effective_email",             "emailAddress",                     "none"),
-    ("City",                        "City",                         "city",                             "none"),
-    ("Zip",                         "Zip",                          "zipCode",                          "none"),
-    ("Membership Expiration Date",  "Membership_Expiration_Date",   "icfglobalmembershipenddate",       "date"),
-    ("ICF Credential",              "Flagship_Credential",          "icfcredential",                    "lower"),
-    ("Credential Award Date",       "Credential_Award_Date",        "icfcredentialawarddate",           "date"),
-    ("Credential Expire Date",      "Credential_Expire_Date",       "icfcredentialexpiredate",          "date"),
-    ("TC Credential",               "ACTC_Credential",              "icfteamcoachingcredential",        "lower"),
-    ("TC Credential Award Date",    "ACTC_Credential_Award_Date",   "icfteamcoachingcredentialaward",   "date"),
-    ("TC Credential Expire Date",   "ACTC_Credential_Expire_Date",  "icfteamcoachingcredentialexpir",   "date"),
-    ("Auto Renewal",                "Auto_Renewal",                 "icfglobalautorenewal",             "autorenewal"),
+    # (label, icf_csv_col, glueup_property, transform)
+    # All alphabetic fields use "lower" to avoid false CHANGED on capitalisation differences.
+    ("First Name",                COL_FIRST_NAME,  "givenName",                      "lower"),
+    ("Last Name",                 COL_LAST_NAME,   "familyName",                     "lower"),
+    ("Email",                     "_effective_email", "emailAddress",                "lower"),
+    ("City",                      COL_CITY,        "city",                           "lower"),
+    ("Zip",                       COL_ZIP,         "zipCode",                        "none"),
+    ("Membership Expiration Date",COL_EXPIRY,      "icfglobalmembershipenddate",     "date"),
+    ("ICF Credential",            COL_CREDENTIAL,  "icfcredential",                  "lower"),
+    ("Credential Award Date",     COL_CRED_AWARD,  "icfcredentialawarddate",         "date"),
+    ("Credential Expire Date",    COL_CRED_EXPIRE, "icfcredentialexpiredate",        "date"),
+    ("TC Credential",             COL_TC_CRED,     "icfteamcoachingcredential",      "lower"),
+    ("TC Credential Award Date",  COL_TC_AWARD,    "icfteamcoachingcredentialaward", "date"),
+    ("TC Credential Expire Date", COL_TC_EXPIRE,   "icfteamcoachingcredentialexpir", "date"),
+    ("Auto Renewal",              COL_AUTO_RENEWAL,"icfglobalautorenewal",           "autorenewal"),
 ]
 
 # ─── Logger ───────────────────────────────────────────────────────────────────
@@ -122,6 +151,27 @@ def log(msg):
 def save_log(path):
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(_log_lines))
+
+# ─── Input file discovery ─────────────────────────────────────────────────────
+
+def find_input_file():
+    """
+    Find the most recently modified file with 'activemembers' in its name
+    in the current directory. Returns the path, or exits with an error.
+    """
+    candidates = glob.glob("*activemembers*")
+    if not candidates:
+        log("ERROR: No file with 'activemembers' in the name found in the current directory.")
+        log("  Either run the Get Active Members Make scenario first, or pass the file path explicitly.")
+        sys.exit(1)
+    # Pick the most recently modified
+    candidates.sort(key=os.path.getmtime, reverse=True)
+    chosen = candidates[0]
+    if len(candidates) > 1:
+        log(f"  Found {len(candidates)} activemembers files. Using most recently modified: {chosen}")
+        for f in candidates[1:]:
+            log(f"    (ignored) {f}")
+    return chosen
 
 # ─── GlueUp Authentication ────────────────────────────────────────────────────
 
@@ -145,7 +195,7 @@ def glueup_auth():
     return {"token": token, "requestOrganizationId": GLUEUP_ORG_ID}
 
 def glueup_post(endpoint, body_dict, auth_headers):
-    """POST to GlueUp API. Returns parsed JSON value or raises on error."""
+    """POST to GlueUp API. Returns parsed JSON or raises on error."""
     a_header = make_a_header("POST")
     headers = {
         "Content-Type": "application/json",
@@ -174,43 +224,42 @@ def glueup_post(endpoint, body_dict, auth_headers):
 def _extract_member_record(result):
     """Extract the first member from a membershipDirectory response."""
     items = result.get("value", [])
-    if not items:
-        return None
-    return items[0]
+    return items[0] if items else None
 
-def lookup_by_email(email, auth):
-    """Search GlueUp members by email. Returns record dict or None."""
-    try:
-        result = glueup_post(
-            "/v2/membershipDirectory/members",
-            {
-                "filter": [{"projection": "emailAddress", "operator": "eq", "values": [email]}],
-                "limit": 5,
-                "offset": 0,
-            },
-            auth,
-        )
-        return _extract_member_record(result)
-    except (HTTPError, URLError, Exception) as e:
-        log(f"  WARNING: GlueUp email lookup failed for {email}: {e}")
-        return None
+def _unwrap(rec):
+    """
+    The /membershipDirectory/members list endpoint wraps each record as:
+      { "membership": {...}, "individualMember": {...} }
+    Unwrap to the individualMember dict if present; otherwise return as-is
+    (handles both list responses and single-record responses).
+    """
+    return rec.get("individualMember", rec)
 
-def lookup_by_member_id(icf_id, auth):
-    """Search GlueUp members by icfmemberid custom field. Returns record dict or None."""
-    try:
-        result = glueup_post(
-            "/v2/membershipDirectory/members",
-            {
-                "filter": [{"projection": "properties.icfmemberid", "operator": "eq", "values": [str(icf_id)]}],
-                "limit": 5,
-                "offset": 0,
-            },
-            auth,
-        )
-        return _extract_member_record(result)
-    except (HTTPError, URLError, Exception) as e:
-        log(f"  WARNING: GlueUp member-ID lookup failed for {icf_id}: {e}")
-        return None
+def build_glueup_index(all_records):
+    """
+    Build two in-memory lookup dicts from the full GlueUp member list.
+    Called once at startup; all per-member lookups then use these dicts.
+
+    Returns:
+      by_email     — {email_lower: individualMember record}
+      by_member_id — {icf_member_id_str: individualMember record}
+    """
+    by_email     = {}
+    by_member_id = {}
+    for raw in all_records:
+        rec = _unwrap(raw)
+        # Email index
+        email_raw = rec.get("emailAddress") or {}
+        email = (email_raw.get("value", "") if isinstance(email_raw, dict) else str(email_raw)).strip().lower()
+        if email:
+            by_email[email] = rec
+        # ICF Member ID index (stored in custom properties)
+        props  = rec.get("properties", {}) or {}
+        icf_id = str(props.get("icfmemberid", "") or "").strip()
+        if icf_id:
+            by_member_id[icf_id] = rec
+    log(f"  Index built: {len(by_email)} by email, {len(by_member_id)} by member ID.")
+    return by_email, by_member_id
 
 def get_all_glueup_members(auth):
     """
@@ -220,7 +269,7 @@ def get_all_glueup_members(auth):
     log("  Fetching all GlueUp members for duplicate detection...")
     all_records = []
     offset = 0
-    limit = 100
+    limit  = 100
     while True:
         try:
             result = glueup_post(
@@ -250,23 +299,107 @@ def is_shadow_email(email):
 # ─── Skip Logic ───────────────────────────────────────────────────────────────
 
 DATE_COLS_FOR_SKIP = [
-    "Chapter_Start_Date", "Membership_Join_Date", "Membership_Expiration_Date",
-    "Credential_Award_Date", "ACTC_Credential_Award_Date",
+    COL_CHAPTER_START, COL_JOIN_DATE, COL_EXPIRY,
+    COL_CRED_AWARD, COL_TC_AWARD,
 ]
 
 def should_skip(row):
     """
     Skip shadow-email members that have no date data at all —
     they have nothing useful to import.
-    Returns (True, reason) or (False, "").
+    Returns (True, reason_str) or (False, "").
     """
-    if row.get("Email", "").strip():
+    if row.get(COL_EMAIL, "").strip():
         return False, ""
-    # shadow email member — check for any date data
     for col in DATE_COLS_FOR_SKIP:
         if row.get(col, "").strip():
             return False, ""
-    return True, f"SKIP: {row.get('First_Name','')} {row.get('Last_Name','')} (ID {row.get('Member_ID','')}) — shadow email, no date data"
+    name = f"{row.get(COL_FIRST_NAME,'')} {row.get(COL_LAST_NAME,'')}".strip()
+    return True, f"SKIP: {name} (ID {row.get(COL_MEMBER_ID,'')}) — shadow email, no date data"
+
+# ─── Row Validation ──────────────────────────────────────────────────────────
+
+# Known valid credential codes (lowercase)
+VALID_CREDENTIALS = {"", "acc", "pcc", "mcc"}
+VALID_TC_CREDENTIALS = {"", "actc"}
+
+# Rough set of known country names and 2-letter codes to sanity-check the field.
+# Not exhaustive — just enough to catch numeric zips or dates landing in Country.
+_COUNTRY_DIGITS_RE = None  # compiled lazily
+
+import re as _re
+
+def _looks_like_date(val):
+    """Return True if val could be a date string (MM/DD/YYYY or YYYY-MM-DD)."""
+    return bool(_re.match(r'^\d{1,2}/\d{1,2}/\d{2,4}$', val)
+                or _re.match(r'^\d{4}-\d{2}-\d{2}$', val))
+
+def _looks_like_number(val):
+    """Return True if val is purely numeric (could be a zip code or phone)."""
+    return bool(_re.match(r'^\+?[\d\s\-\.]+$', val))
+
+def validate_row(row):
+    """
+    Sanity-check a row for obvious data-shift or format errors.
+    Returns (True, [list of error strings]) if invalid, (False, []) if OK.
+    Hard-skip rules — any failure causes the row to be excluded from all output.
+    """
+    errors = []
+    member_id = row.get(COL_MEMBER_ID, "").strip()
+    name = f"{row.get(COL_FIRST_NAME,'').strip()} {row.get(COL_LAST_NAME,'').strip()}".strip()
+    prefix = f"ID {member_id} ({name})"
+
+    # Member ID must be numeric
+    if member_id and not member_id.isdigit():
+        errors.append(f"{prefix}: Member ID is not numeric: {member_id!r}")
+
+    # Email must contain @ and a dot (if present — shadow email members have no email)
+    email = row.get(COL_EMAIL, "").strip()
+    if email and ("@" not in email or "." not in email.split("@")[-1]):
+        errors.append(f"{prefix}: Email looks invalid: {email!r}")
+
+    # Country must not look like a number or a date
+    country = row.get(COL_COUNTRY, "").strip()
+    if country:
+        if _looks_like_number(country) and not any(c.isalpha() for c in country):
+            errors.append(f"{prefix}: Country looks like a number (possible column shift): {country!r}")
+        if _looks_like_date(country):
+            errors.append(f"{prefix}: Country looks like a date (possible column shift): {country!r}")
+
+    # Zip must not look like a country name (all alpha, length > 3)
+    zip_val = row.get(COL_ZIP, "").strip()
+    if zip_val and zip_val.isalpha() and len(zip_val) > 3:
+        errors.append(f"{prefix}: Zip looks like a country name (possible column shift): {zip_val!r}")
+
+    # Date fields must parse as dates if non-blank
+    date_fields = [
+        (COL_CHAPTER_START, "Chapter Start Date"),
+        (COL_JOIN_DATE,     "Membership Join Date"),
+        (COL_EXPIRY,        "Expiration Date"),
+        (COL_CRED_AWARD,    "Credential Award Date"),
+        (COL_CRED_EXPIRE,   "Credential Expire Date"),
+        (COL_TC_AWARD,      "TC Credential Award Date"),
+        (COL_TC_EXPIRE,     "TC Credential Expire Date"),
+    ]
+    for col, label in date_fields:
+        val = row.get(col, "").strip()
+        if val:
+            try:
+                datetime.datetime.strptime(val, "%m/%d/%Y")
+            except ValueError:
+                errors.append(f"{prefix}: {label} is not a valid date: {val!r}")
+
+    # Credential must be a known code or blank
+    cred = row.get(COL_CREDENTIAL, "").strip().lower()
+    if cred not in VALID_CREDENTIALS:
+        errors.append(f"{prefix}: Credential is not a recognised code: {row.get(COL_CREDENTIAL,'')!r} (expected one of {sorted(VALID_CREDENTIALS)})")
+
+    # TC Credential must be a known code or blank
+    tc_cred = row.get(COL_TC_CRED, "").strip().lower()
+    if tc_cred not in VALID_TC_CREDENTIALS:
+        errors.append(f"{prefix}: TC Credential is not a recognised code: {row.get(COL_TC_CRED,'')!r} (expected one of {sorted(VALID_TC_CREDENTIALS)})")
+
+    return bool(errors), errors
 
 # ─── Field Transformations ────────────────────────────────────────────────────
 
@@ -290,13 +423,11 @@ def get_local_region(city, zip_code):
     """
     city_key = (city or "").strip().lower()
     zip_key  = (zip_code or "").strip()
-    result = ZIP_REGION_LOOKUP.get((city_key, zip_key))
-    if result:
-        return result
-    result = ZIP_ONLY_LOOKUP.get(zip_key)
-    if result:
-        return result
-    return "No Region"
+    return (
+        ZIP_REGION_LOOKUP.get((city_key, zip_key))
+        or ZIP_ONLY_LOOKUP.get(zip_key)
+        or "No Region"
+    )
 
 # ─── Zip/Region lookup loader ─────────────────────────────────────────────────
 
@@ -339,14 +470,15 @@ def load_zip_region_lookup(xlsx_path=None):
 # ─── CSV Loading ──────────────────────────────────────────────────────────────
 
 REQUIRED_COLS = [
-    "Member_ID", "First_Name", "Last_Name", "Email",
-    "Membership_Expiration_Date", "Member_Type",
+    COL_MEMBER_ID, COL_FIRST_NAME, COL_LAST_NAME, COL_EMAIL, COL_EXPIRY,
 ]
+OPTIONAL_COLS = [COL_MEMBER_TYPE]
 
 def load_csv(path):
     """
     Read input CSV. Returns list of row dicts.
     Exits if required columns are missing.
+    Warns (but continues) if optional columns are absent.
     """
     if not os.path.exists(path):
         log(f"ERROR: Input file not found: {path}")
@@ -355,14 +487,20 @@ def load_csv(path):
     with open(path, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         headers = reader.fieldnames or []
-        missing = [c for c in REQUIRED_COLS if c not in headers]
-        if missing:
-            log(f"ERROR: Input CSV missing required columns: {missing}")
-            log(f"  Found columns: {headers}")
+        missing_required = [c for c in REQUIRED_COLS if c not in headers]
+        if missing_required:
+            log(f"ERROR: Input CSV missing required columns: {missing_required}")
+            log(f"  Found columns: {list(headers)}")
             sys.exit(1)
-        for i, row in enumerate(reader, start=2):
+        missing_optional = [c for c in OPTIONAL_COLS if c not in headers]
+        for col in missing_optional:
+            log(f"  NOTE: Optional column '{col}' not present — field will be blank in output.")
+        for row in reader:
             if not any(v.strip() for v in row.values()):
                 continue  # skip blank rows
+            # Ensure optional cols exist in every row dict (blank if absent)
+            for col in missing_optional:
+                row.setdefault(col, "")
             rows.append(row)
     log(f"  Loaded {len(rows)} data rows from {path}.")
     return rows
@@ -375,43 +513,69 @@ def extract_glueup_name(rec):
     last  = (rec.get("familyName") or "").strip()
     return first, last
 
-def extract_glueup_field(rec, prop_key):
-    """
-    Extract a field value from a GlueUp record.
-    Handles top-level fields and nested properties dict.
-    Dates stored as timestamps (ms) are converted to MM/DD/YYYY.
-    """
-    # Top-level contact fields
-    top_map = {
-        "givenName":    rec.get("givenName", ""),
-        "familyName":   rec.get("familyName", ""),
-        "emailAddress": (rec.get("emailAddress") or {}).get("value", "") if isinstance(rec.get("emailAddress"), dict) else rec.get("emailAddress", ""),
-        "city":         rec.get("city", "") or (rec.get("address") or {}).get("city", ""),
-        "zipCode":      rec.get("zipCode", "") or (rec.get("address") or {}).get("zipCode", ""),
-    }
-    if prop_key in top_map:
-        return str(top_map[prop_key] or "").strip()
+def _glueup_addr(rec):
+    """Return the address sub-object, checking both top-level and nested."""
+    return rec.get("address") or {}
 
-    # Custom properties
-    props = rec.get("properties", {}) or {}
-    val = props.get(prop_key, "")
+def _glueup_city(rec):
+    """City is stored as address.cityName in GlueUp API responses."""
+    addr = _glueup_addr(rec)
+    return str(addr.get("cityName") or addr.get("city") or rec.get("city") or "").strip()
+
+def _glueup_zip(rec):
+    """Zip is stored as address.zipCode in GlueUp API responses."""
+    addr = _glueup_addr(rec)
+    return str(addr.get("zipCode") or rec.get("zipCode") or "").strip()
+
+def _extract_prop_value(val):
+    """
+    GlueUp custom properties that are single-select fields return a dict:
+      {"code": "none", "title": {"en": "None"}}
+    Extract the code string in that case.
+    Dates as epoch-ms ints are converted to MM/DD/YYYY.
+    Dates as YYYY-MM-DD strings are converted to MM/DD/YYYY.
+    Everything else is returned as a stripped string.
+    """
     if val is None:
         return ""
-    # GlueUp stores dates as epoch-ms integers for custom date fields
+    # Single-select / dropdown field — extract the code
+    if isinstance(val, dict):
+        return str(val.get("code", "") or "").strip()
+    # Epoch-ms timestamp
     if isinstance(val, (int, float)) and val > 1_000_000_000_000:
         try:
-            dt = datetime.datetime.utcfromtimestamp(val / 1000)
-            return dt.strftime("%m/%d/%Y")
+            return datetime.datetime.utcfromtimestamp(val / 1000).strftime("%m/%d/%Y")
         except Exception:
             pass
-    # GlueUp may store dates as YYYY-MM-DD strings
+    # YYYY-MM-DD string
     if isinstance(val, str) and len(val) == 10 and val[4] == "-":
         try:
-            dt = datetime.datetime.strptime(val, "%Y-%m-%d")
-            return dt.strftime("%m/%d/%Y")
+            return datetime.datetime.strptime(val, "%Y-%m-%d").strftime("%m/%d/%Y")
         except Exception:
             pass
     return str(val).strip()
+
+def extract_glueup_field(rec, prop_key):
+    """
+    Extract a field value from a GlueUp record.
+    Handles top-level contact fields and custom properties dict.
+    """
+    # Top-level contact fields
+    if prop_key == "givenName":
+        return str(rec.get("givenName") or "").strip()
+    if prop_key == "familyName":
+        return str(rec.get("familyName") or "").strip()
+    if prop_key == "emailAddress":
+        raw = rec.get("emailAddress") or {}
+        return (raw.get("value", "") if isinstance(raw, dict) else str(raw)).strip()
+    if prop_key == "city":
+        return _glueup_city(rec)
+    if prop_key == "zipCode":
+        return _glueup_zip(rec)
+
+    # Custom properties
+    props = rec.get("properties", {}) or {}
+    return _extract_prop_value(props.get(prop_key))
 
 def extract_glueup_import_date(rec):
     """Extract icfimportdate from GlueUp record, for duplicate detection."""
@@ -420,104 +584,161 @@ def extract_glueup_import_date(rec):
 # ─── Row Builders ─────────────────────────────────────────────────────────────
 
 def build_contact_row(row, glueup_rec, effective_email, has_real_email):
-    """Build one row dict for the Contact import CSV."""
+    """
+    Build one row dict for the Contact import XLSX.
+    All 33 columns from sample_contact_import.xlsx must be present.
+    Blue (ignored) fields are left blank. Active fields are populated.
+    """
     shadow = not has_real_email
-
-    # Source of truth: GlueUp for existing real-email members
     if glueup_rec and not shadow:
         first, last = extract_glueup_name(glueup_rec)
     else:
-        first = row.get("First_Name", "").strip()
-        last  = row.get("Last_Name", "").strip()
+        first = row.get(COL_FIRST_NAME, "").strip()
+        last  = row.get(COL_LAST_NAME,  "").strip()
+
+    credential = transform_credential(row.get(COL_CREDENTIAL, ""))
+    tc_cred    = transform_credential(row.get(COL_TC_CRED, ""))
 
     return {
-        "First Name":             first,
-        "Last Name":              last,
-        "Email":                  effective_email,
-        "Has Email":              "yes" if has_real_email else "no",
-        "ICF Global Member ID":   row.get("Member_ID", "").strip(),
-        "Phone":                  row.get("Phone", "").strip(),
-        "City":                   row.get("City", "").strip(),
-        "Postal Code/Zip Code":   row.get("Zip", "").strip(),
-        "State/Province":         expand_state(row.get("State", "")),
-        "Country":                row.get("Country", "").strip(),
-        "Local Region":           get_local_region(row.get("City", ""), row.get("Zip", "")),
+        "First Name":                               first,
+        "Last Name":                                last,
+        "Address":                                  "",          # blue — ignored
+        "City":                                     row.get(COL_CITY, "").strip(),
+        "State/Province":                           expand_state(row.get(COL_STATE, "")),
+        "Postal Code/Zip Code":                     row.get(COL_ZIP, "").strip(),
+        "Email":                                    effective_email,
+        "Phone":                                    row.get(COL_PHONE, "").strip(),
+        "Company":                                  "",          # blue — ignored
+        "Title/Position":                           "",          # blue — ignored
+        "Volunteer Role":                           "",          # blue — ignored
+        "Findable":                                 "",          # blue — ignored
+        "Directory Listing Text":                   "",          # blue — ignored
+        "Coach Industry":                           "",          # blue — ignored
+        "Coaching Specialization":                  "",          # blue — ignored
+        "Has Email":                                "yes" if has_real_email else "no",
+        "ICF Chapter Start Date":                   row.get(COL_CHAPTER_START, "").strip(),
+        "ICF Credential":                           credential,
+        "ICF Credential Award Date":                row.get(COL_CRED_AWARD, "").strip() if credential else "",
+        "ICF Credential Expire Date":               row.get(COL_CRED_EXPIRE, "").strip() if credential else "",
+        "ICF Global Auto Renewal":                  "",          # blue — ignored (belongs to membership)
+        "ICF Global Member ID":                     row.get(COL_MEMBER_ID, "").strip(),
+        "ICF Global Member Status":                 row.get(COL_STATUS, "").strip(),
+        "ICF Team Coaching Credential":             tc_cred,
+        "ICF Team Coaching Credential Award Date":  row.get(COL_TC_AWARD, "").strip() if tc_cred else "",
+        "ICF Team Coaching Credential Expire Date": row.get(COL_TC_EXPIRE, "").strip() if tc_cred else "",
+        "ICF Global Import Date":                   RUN_DATE_MMDDYYYY,
+        "Local Region":                             get_local_region(row.get(COL_CITY, ""), row.get(COL_ZIP, "")),
+        "ICF Global Member Type":                   row.get(COL_MEMBER_TYPE, "").strip(),
+        "ICF Global Membership End Date":           "",          # blue — ignored (belongs to membership)
+        "ICF Global Membership Restart Date":       "",          # blue — ignored (belongs to membership)
+        "ICF Global Membership Start Date":         "",          # blue — ignored (belongs to membership)
+        "ICF Global Membership Type":               "",          # blue — ignored (belongs to membership)
     }
 
+# Exact column order from sample_contact_import.xlsx (33 columns — all must be present)
 CONTACT_FIELDNAMES = [
-    "First Name", "Last Name", "Email", "Has Email",
-    "ICF Global Member ID", "Phone", "City", "Postal Code/Zip Code",
-    "State/Province", "Country", "Local Region",
+    "First Name", "Last Name", "Address", "City", "State/Province",
+    "Postal Code/Zip Code", "Email", "Phone", "Company", "Title/Position",
+    "Volunteer Role", "Findable", "Directory Listing Text", "Coach Industry",
+    "Coaching Specialization", "Has Email", "ICF Chapter Start Date",
+    "ICF Credential", "ICF Credential Award Date", "ICF Credential Expire Date",
+    "ICF Global Auto Renewal", "ICF Global Member ID", "ICF Global Member Status",
+    "ICF Team Coaching Credential", "ICF Team Coaching Credential Award Date",
+    "ICF Team Coaching Credential Expire Date", "ICF Global Import Date",
+    "Local Region", "ICF Global Member Type", "ICF Global Membership End Date",
+    "ICF Global Membership Restart Date", "ICF Global Membership Start Date",
+    "ICF Global Membership Type",
 ]
 
 def build_membership_row(row, glueup_rec, effective_email, has_real_email):
-    """Build one row dict for the Membership import CSV."""
+    """
+    Build one row dict for the Membership import XLSX.
+    All 34 columns from sample_membership_import.xlsx must be present.
+    Blue (ignored) fields are left blank. Active fields are populated.
+    First Name and Last Name are required by GlueUp for record matching.
+    """
     shadow = not has_real_email
-
-    # Name: GlueUp for existing real-email members, ICF Global for new/shadow
     if glueup_rec and not shadow:
         first, last = extract_glueup_name(glueup_rec)
     else:
-        first = row.get("First_Name", "").strip()
-        last  = row.get("Last_Name", "").strip()
-
-    credential  = transform_credential(row.get("Flagship_Credential", ""))
-    tc_cred     = transform_credential(row.get("ACTC_Credential", ""))
+        first = row.get(COL_FIRST_NAME, "").strip()
+        last  = row.get(COL_LAST_NAME,  "").strip()
 
     return {
-        "Membership Start Date":            "",
-        "Membership End Date":              row.get("Membership_Expiration_Date", "").strip(),
-        "Currency":                         "",
-        "First Name":                       first,
-        "Last Name":                        last,
-        "Email":                            effective_email,
-        "Postal Code/Zip Code":             row.get("Zip", "").strip(),
-        "Address":                          "",
-        "City":                             row.get("City", "").strip(),
-        "Volunteer Role":                   "",
-        "Coach Industry":                   "",
-        "Coach Specialty":                  "",
-        "Findable":                         "",
-        "Directory Listing Text":           "",
-        "ICF Credential":                   credential,
-        "ICF Credential Award Date":        row.get("Credential_Award_Date", "").strip() if credential else "",
-        "ICF Credential Expire Date":       row.get("Credential_Expire_Date", "").strip() if credential else "",
-        "ICF Global Auto Renewal":          transform_auto_renewal(row.get("Auto_Renewal", "")),
-        "ICF Global Member ID":             row.get("Member_ID", "").strip(),
-        "ICF Global Membership End Date":   row.get("Membership_Expiration_Date", "").strip(),
-        "ICF Global Membership Start Date": row.get("Membership_Join_Date", "").strip(),
-        "ICF Global Membership Type":       "individual",
-        "ICF Team Coaching Credential":     tc_cred,
-        "ICF TC Credential Award Date":     row.get("ACTC_Credential_Award_Date", "").strip() if tc_cred else "",
-        "ICF TC Credential Expire Date":    row.get("ACTC_Credential_Expire_Date", "").strip() if tc_cred else "",
-        "ICF Global Member Type":           row.get("Member_Type", "").strip(),
-        "ICF Global Import Date":           RUN_DATE_MMDDYYYY,
+        "Membership Start Date":                        row.get(COL_JOIN_DATE, "").strip(),
+        "Membership End Date":                          row.get(COL_EXPIRY, "").strip(),
+        "Currency":                                     "",          # blue — ignored
+        "First Name":                                   first,
+        "Last Name":                                    last,
+        "Email":                                        effective_email,
+        "Phone":                                        "",          # blue — ignored (in contact import)
+        "Postal Code/Zip Code":                         "",          # blue — ignored (in contact import)
+        "Address":                                      "",          # blue — ignored
+        "City":                                         "",          # blue — ignored (in contact import)
+        "State/Province":                               "",          # blue — ignored (in contact import)
+        "Country/Region":                               "",          # blue — ignored
+        "Volunteer Role":                               "",          # blue — ignored
+        "Coach Industry":                               "",          # blue — ignored
+        "Coaching Specialization":                      "",          # blue — ignored
+        "Company Name":                                 "",          # blue — ignored
+        "Function":                                     "",          # blue — ignored
+        "Title/Position":                               "",          # blue — ignored
+        "Findable":                                     "",          # blue — ignored
+        "Directory Listing Text":                       "",          # blue — ignored
+        "ICF Credential":                               "",          # blue — ignored (in contact import)
+        "ICF Credential Award Date":                    "",          # blue — ignored (in contact import)
+        "ICF Credential Expire Date":                   "",          # blue — ignored (in contact import)
+        "ICF Global Auto Renewal":                      transform_auto_renewal(row.get(COL_AUTO_RENEWAL, "")),
+        "ICF Global Member ID":                         row.get(COL_MEMBER_ID, "").strip(),
+        "ICF Global Membership End Date":               row.get(COL_EXPIRY, "").strip(),
+        "ICF Global Membership Start Date":             row.get(COL_JOIN_DATE, "").strip(),
+        "ICF Global Membership Type":                   "individual",
+        "ICF Team Coaching Credential":                 "",          # blue — ignored (in contact import)
+        "ICF Team Coaching Credential Award Date":      "",          # blue — ignored (in contact import)
+        "ICF Team Coaching Credential Expire Date":     "",          # blue — ignored (in contact import)
+        "Has Email":                                    "",          # blue — ignored (in contact import)
+        "ICF Global Import Date":                       RUN_DATE_MMDDYYYY,
+        "ICF Global Membership Restart Date":           row.get(COL_REJOIN, "").strip(),
     }
 
+# Exact column order from sample_membership_import.xlsx (34 columns — all must be present)
 MEMBERSHIP_FIELDNAMES = [
     "Membership Start Date", "Membership End Date", "Currency",
-    "First Name", "Last Name", "Email", "Postal Code/Zip Code",
-    "Address", "City", "Volunteer Role", "Coach Industry", "Coach Specialty",
-    "Findable", "Directory Listing Text",
+    "First Name", "Last Name", "Email", "Phone", "Postal Code/Zip Code",
+    "Address", "City", "State/Province", "Country/Region",
+    "Volunteer Role", "Coach Industry", "Coaching Specialization",
+    "Company Name", "Function", "Title/Position", "Findable",
+    "Directory Listing Text",
     "ICF Credential", "ICF Credential Award Date", "ICF Credential Expire Date",
     "ICF Global Auto Renewal", "ICF Global Member ID",
     "ICF Global Membership End Date", "ICF Global Membership Start Date",
-    "ICF Global Membership Type", "ICF Team Coaching Credential",
-    "ICF TC Credential Award Date", "ICF TC Credential Expire Date",
-    "ICF Global Member Type", "ICF Global Import Date",
+    "ICF Global Membership Type",
+    "ICF Team Coaching Credential",
+    "ICF Team Coaching Credential Award Date",
+    "ICF Team Coaching Credential Expire Date",
+    "Has Email", "ICF Global Import Date", "ICF Global Membership Restart Date",
 ]
 
 # ─── Comparison Logic ─────────────────────────────────────────────────────────
 
+# GlueUp stores "no credential" as code "none" and "no auto-renewal" as "no".
+# ICF Global sends blank for both. Treat GlueUp "none" as equivalent to blank
+# for credential fields, so we don't generate false CHANGED records.
+_GLUEUP_BLANK_CODES = {"none", "unspecified", ""}
+
 def normalize_for_compare(value, transform):
-    """Normalize a value for comparison (strip, lowercase where needed)."""
+    """
+    Normalize a value for comparison between ICF Global and GlueUp.
+    Handles GlueUp's explicit 'none'/'unspecified' codes as equivalent to blank.
+    """
     v = str(value or "").strip()
     if transform == "lower":
-        return v.lower()
+        # Treat GlueUp 'none' code as blank (= no credential in ICF)
+        lowered = v.lower()
+        return "" if lowered in _GLUEUP_BLANK_CODES else lowered
     if transform == "autorenewal":
         return "yes" if v.lower() == "yes" else "no"
     if transform == "date":
-        # Normalize MM/DD/YYYY → YYYY-MM-DD for comparison
         try:
             return datetime.datetime.strptime(v, "%m/%d/%Y").strftime("%Y-%m-%d")
         except Exception:
@@ -528,24 +749,30 @@ def compare_record(row, glueup_rec, effective_email):
     """
     Compare ICF Global row against GlueUp record field by field.
     Returns list of dicts: [{field, icf_value, glueup_value, differs}]
+
+    Non-overwrite rule: if ICF Global sends a blank value and GlueUp has a
+    non-blank value, treat them as equal. We never want to blank out historical
+    data in GlueUp (e.g. expired credential dates that ICF Global no longer sends).
     """
     diffs = []
     for label, icf_col, glueup_prop, transform in COMPARISON_FIELDS:
-        if icf_col == "_effective_email":
-            icf_raw = effective_email
-        else:
-            icf_raw = row.get(icf_col, "")
-
+        icf_raw    = effective_email if icf_col == "_effective_email" else row.get(icf_col, "")
         glueup_raw = extract_glueup_field(glueup_rec, glueup_prop) if glueup_rec else ""
 
         icf_norm    = normalize_for_compare(icf_raw, transform)
         glueup_norm = normalize_for_compare(glueup_raw, transform)
 
+        # Non-overwrite rule: ICF blank + GlueUp has value → not a difference
+        if not icf_norm and glueup_norm:
+            differs = False
+        else:
+            differs = icf_norm != glueup_norm
+
         diffs.append({
             "field":        label,
             "icf_value":    str(icf_raw).strip(),
             "glueup_value": str(glueup_raw).strip(),
-            "differs":      icf_norm != glueup_norm,
+            "differs":      differs,
         })
     return diffs
 
@@ -559,19 +786,41 @@ def write_csv(rows, path, fieldnames):
         writer.writerows(rows)
     log(f"  Written: {path} ({len(rows)} rows)")
 
+def write_import_xlsx(rows, path, fieldnames):
+    """
+    Write list-of-dicts to an import-ready XLSX file with header row.
+    Header row uses the dark blue style matching the other report files.
+    All values written as plain strings to avoid GlueUp import type issues.
+    """
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Import"
+
+    for col, h in enumerate(fieldnames, start=1):
+        c = ws.cell(row=1, column=col, value=h)
+        c.fill = FILL_HEADER
+        c.font = FONT_WHITE_BOLD
+        c.alignment = Alignment(wrap_text=False, vertical="center")
+        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 20
+
+    for row_num, row in enumerate(rows, start=2):
+        for col, field in enumerate(fieldnames, start=1):
+            ws.cell(row=row_num, column=col, value=row.get(field, ""))
+
+    wb.save(path)
+    log(f"  Written: {path} ({len(rows)} rows)")
+
 # ─── Excel Report Writing ─────────────────────────────────────────────────────
 
-# Colour palette
-FILL_GREEN  = PatternFill("solid", fgColor="C6EFCE")   # NEW
-FILL_YELLOW = PatternFill("solid", fgColor="FFEB9C")   # CHANGED
-FILL_GRAY   = PatternFill("solid", fgColor="F2F2F2")   # SAME / header
-FILL_RED    = PatternFill("solid", fgColor="FFC7CE")   # diff cell
-FILL_HEADER = PatternFill("solid", fgColor="1F3864")   # dark blue header
+FILL_GREEN       = PatternFill("solid", fgColor="C6EFCE")
+FILL_YELLOW      = PatternFill("solid", fgColor="FFEB9C")
+FILL_GRAY        = PatternFill("solid", fgColor="F2F2F2")
+FILL_RED         = PatternFill("solid", fgColor="FFC7CE")
+FILL_HEADER      = PatternFill("solid", fgColor="1F3864")
 FILL_DUPE_KEEP   = PatternFill("solid", fgColor="C6EFCE")
 FILL_DUPE_REVIEW = PatternFill("solid", fgColor="FFC7CE")
-
-FONT_WHITE_BOLD = Font(bold=True, color="FFFFFF")
-FONT_BOLD       = Font(bold=True)
+FONT_WHITE_BOLD  = Font(bold=True, color="FFFFFF")
+FONT_BOLD        = Font(bold=True)
 
 def _hdr_cell(ws, row, col, value, fill=None, font=None):
     c = ws.cell(row=row, column=col, value=value)
@@ -584,92 +833,73 @@ def _hdr_cell(ws, row, col, value, fill=None, font=None):
 
 def write_comparison_report(comparison_data, path):
     """
-    Write comparison_report XLSX.
-    Tabs:
+    Write comparison_report XLSX with three tabs:
       Summary  — NEW / CHANGED / SAME / SKIPPED counts
       Detail   — every member, every comparison field, colour-coded
       Changed  — only CHANGED members
-    comparison_data: list of dicts with keys:
-      member_id, name, email, status, diffs (list from compare_record())
     """
     wb = openpyxl.Workbook()
 
-    # ── Summary tab ──────────────────────────────────────────────────────────
+    # ── Summary ──────────────────────────────────────────────────────────────
     ws_sum = wb.active
     ws_sum.title = "Summary"
-    counts = {"NEW": 0, "CHANGED": 0, "SAME": 0, "SKIPPED": 0}
+    counts = {}
     for r in comparison_data:
         counts[r["status"]] = counts.get(r["status"], 0) + 1
 
     ws_sum.column_dimensions["A"].width = 20
     ws_sum.column_dimensions["B"].width = 12
-    _hdr_cell(ws_sum, 1, 1, f"GlobalGlueUpSync — Comparison Report — {RUN_TS.strftime('%Y-%m-%d %H:%M')}", FILL_HEADER, FONT_WHITE_BOLD)
+    _hdr_cell(ws_sum, 1, 1,
+              f"GlobalGlueUpSync — Comparison Report — {RUN_TS.strftime('%Y-%m-%d %H:%M')}",
+              FILL_HEADER, FONT_WHITE_BOLD)
     ws_sum.merge_cells("A1:B1")
     _hdr_cell(ws_sum, 3, 1, "Status", FILL_GRAY, FONT_BOLD)
-    _hdr_cell(ws_sum, 3, 2, "Count", FILL_GRAY, FONT_BOLD)
-    status_fills = {"NEW": FILL_GREEN, "CHANGED": FILL_YELLOW, "SAME": None, "SKIPPED": None}
+    _hdr_cell(ws_sum, 3, 2, "Count",  FILL_GRAY, FONT_BOLD)
+    status_fills = {"NEW": FILL_GREEN, "CHANGED": FILL_YELLOW}
     for i, status in enumerate(["NEW", "CHANGED", "SAME", "SKIPPED"], start=4):
-        ws_sum.cell(row=i, column=1, value=status).fill = status_fills.get(status) or PatternFill()
-        ws_sum.cell(row=i, column=2, value=counts[status])
+        c = ws_sum.cell(row=i, column=1, value=status)
+        if status in status_fills:
+            c.fill = status_fills[status]
+        ws_sum.cell(row=i, column=2, value=counts.get(status, 0))
 
-    # ── Detail tab ───────────────────────────────────────────────────────────
-    ws_det = wb.create_sheet("Detail")
-    field_labels = [f["field"] for f in comparison_data[0]["diffs"]] if comparison_data and comparison_data[0].get("diffs") else [c[0] for c in COMPARISON_FIELDS]
-    headers = ["Status", "ICF Member ID", "Name", "Email"] + \
-              [f"{lbl} (ICF)" for lbl in field_labels] + \
-              [f"{lbl} (GlueUp)" for lbl in field_labels]
+    # ── Detail & Changed tabs ────────────────────────────────────────────────
+    field_labels = [f[0] for f in COMPARISON_FIELDS]
+    headers = (["Status", "ICF Member ID", "Name", "Email"]
+               + [f"{lbl} (ICF)" for lbl in field_labels]
+               + [f"{lbl} (GlueUp)" for lbl in field_labels])
 
-    for col, h in enumerate(headers, start=1):
-        _hdr_cell(ws_det, 1, col, h, FILL_HEADER, FONT_WHITE_BOLD)
-        ws_det.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 18
+    for tab_name, filter_fn in [
+        ("Detail",  lambda e: True),
+        ("Changed", lambda e: e["status"] == "CHANGED"),
+    ]:
+        ws = wb.create_sheet(tab_name)
+        for col, h in enumerate(headers, start=1):
+            _hdr_cell(ws, 1, col, h, FILL_HEADER, FONT_WHITE_BOLD)
+            ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 18
 
-    row_num = 2
-    for entry in comparison_data:
-        status = entry["status"]
-        row_fill = FILL_GREEN if status == "NEW" else FILL_YELLOW if status == "CHANGED" else None
+        row_num = 2
+        for entry in comparison_data:
+            if not filter_fn(entry):
+                continue
+            status = entry["status"]
+            row_fill = FILL_GREEN if status == "NEW" else FILL_YELLOW if status == "CHANGED" else None
+            diffs = entry.get("diffs", [])
+            base_vals   = [status, entry["member_id"], entry["name"], entry["email"]]
+            icf_vals    = [d["icf_value"]    for d in diffs]
+            glueup_vals = [d["glueup_value"] for d in diffs]
+            differs     = [d["differs"]      for d in diffs]
 
-        base_vals = [status, entry["member_id"], entry["name"], entry["email"]]
-        icf_vals    = [d["icf_value"]    for d in entry.get("diffs", [])]
-        glueup_vals = [d["glueup_value"] for d in entry.get("diffs", [])]
-        differs     = [d["differs"]      for d in entry.get("diffs", [])]
-
-        all_vals = base_vals + icf_vals + glueup_vals
-        for col, val in enumerate(all_vals, start=1):
-            c = ws_det.cell(row=row_num, column=col, value=val)
-            c.alignment = Alignment(vertical="top")
-            if row_fill:
-                c.fill = row_fill
-            # Highlight individual diff cells in the value columns
-            if col > 4:
-                field_idx = (col - 5) % len(field_labels) if len(field_labels) else 0
-                if field_idx < len(differs) and differs[field_idx]:
-                    c.fill = FILL_RED
-        row_num += 1
-
-    # ── Changed tab ───────────────────────────────────────────────────────────
-    ws_chg = wb.create_sheet("Changed")
-    for col, h in enumerate(headers, start=1):
-        _hdr_cell(ws_chg, 1, col, h, FILL_HEADER, FONT_WHITE_BOLD)
-        ws_chg.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 18
-
-    row_num = 2
-    for entry in comparison_data:
-        if entry["status"] != "CHANGED":
-            continue
-        base_vals   = ["CHANGED", entry["member_id"], entry["name"], entry["email"]]
-        icf_vals    = [d["icf_value"]    for d in entry.get("diffs", [])]
-        glueup_vals = [d["glueup_value"] for d in entry.get("diffs", [])]
-        differs     = [d["differs"]      for d in entry.get("diffs", [])]
-        all_vals    = base_vals + icf_vals + glueup_vals
-        for col, val in enumerate(all_vals, start=1):
-            c = ws_chg.cell(row=row_num, column=col, value=val)
-            c.alignment = Alignment(vertical="top")
-            c.fill = FILL_YELLOW
-            if col > 4:
-                field_idx = (col - 5) % len(field_labels) if len(field_labels) else 0
-                if field_idx < len(differs) and differs[field_idx]:
-                    c.fill = FILL_RED
-        row_num += 1
+            for col, val in enumerate(base_vals + icf_vals + glueup_vals, start=1):
+                c = ws.cell(row=row_num, column=col, value=val)
+                c.alignment = Alignment(vertical="top")
+                if row_fill:
+                    c.fill = row_fill
+                # Highlight individual differing cells
+                if col > 4 and len(differs) > 0:
+                    field_idx = (col - 5) % len(field_labels)
+                    if field_idx < len(differs) and differs[field_idx]:
+                        c.fill = FILL_RED
+            row_num += 1
 
     wb.save(path)
     log(f"  Written: {path}")
@@ -677,13 +907,12 @@ def write_comparison_report(comparison_data, path):
 def write_duplicate_report(all_glueup_members, path):
     """
     Write duplicate_report XLSX.
-    Finds contacts with >1 active membership for the same icfmemberid.
-    Uses icfimportdate to flag: most recent = KEEP, older = REVIEW/CANCEL.
+    Groups by icfmemberid; flags groups with >1 record.
+    Most recent icfimportdate = KEEP; older = REVIEW — CANCEL IN GLUEUP.
     """
-    # Group by icfmemberid
     by_icf_id = defaultdict(list)
     for rec in all_glueup_members:
-        props = rec.get("properties", {}) or {}
+        props  = rec.get("properties", {}) or {}
         icf_id = str(props.get("icfmemberid", "") or "").strip()
         if icf_id:
             by_icf_id[icf_id].append(rec)
@@ -694,46 +923,50 @@ def write_duplicate_report(all_glueup_members, path):
     ws = wb.active
     ws.title = "Duplicates"
 
-    headers = ["Action", "ICF Member ID", "GlueUp Membership ID", "Name", "Email", "Import Date", "Notes"]
-    for col, h in enumerate(headers, start=1):
-        _hdr_cell(ws, 1, col, h, FILL_HEADER, FONT_WHITE_BOLD)
-        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 22
+    col_headers = ["Action", "ICF Member ID", "GlueUp Membership ID",
+                   "Name", "Email", "Import Date", "Notes"]
+    last_col = openpyxl.utils.get_column_letter(len(col_headers))
 
-    _hdr_cell(ws, 1, 1, f"Duplicate Report — {RUN_TS.strftime('%Y-%m-%d %H:%M')}", FILL_HEADER, FONT_WHITE_BOLD)
-    ws.merge_cells(f"A1:{openpyxl.utils.get_column_letter(len(headers))}1")
+    _hdr_cell(ws, 1, 1,
+              f"Duplicate Report — {RUN_TS.strftime('%Y-%m-%d %H:%M')}",
+              FILL_HEADER, FONT_WHITE_BOLD)
+    ws.merge_cells(f"A1:{last_col}1")
 
-    # re-write actual headers on row 2
-    for col, h in enumerate(headers, start=1):
+    for col, h in enumerate(col_headers, start=1):
         _hdr_cell(ws, 2, col, h, FILL_HEADER, FONT_WHITE_BOLD)
+        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 24
 
-    row_num = 3
+    def parse_import_date(rec):
+        d = extract_glueup_import_date(rec)
+        # Try MM/DD/YYYY first (after _extract_prop_value conversion),
+        # then YYYY-MM-DD as fallback if stored as plain string
+        for fmt in ("%m/%d/%Y", "%Y-%m-%d"):
+            try:
+                return datetime.datetime.strptime(d, fmt)
+            except Exception:
+                pass
+        return datetime.datetime.min
+
+    row_num    = 3
     dupe_count = 0
     for icf_id, recs in sorted(dupes.items()):
-        # Sort by import date descending — most recent = keep
-        def parse_import_date(r):
-            d = extract_glueup_import_date(r)
-            try:
-                return datetime.datetime.strptime(d, "%m/%d/%Y")
-            except Exception:
-                return datetime.datetime.min
-
         recs_sorted = sorted(recs, key=parse_import_date, reverse=True)
         for i, rec in enumerate(recs_sorted):
-            action = "KEEP" if i == 0 else "REVIEW — CANCEL IN GLUEUP"
-            fill   = FILL_DUPE_KEEP if i == 0 else FILL_DUPE_REVIEW
-            name   = f"{rec.get('givenName','')} {rec.get('familyName','')}".strip()
+            action    = "KEEP" if i == 0 else "REVIEW — CANCEL IN GLUEUP"
+            fill      = FILL_DUPE_KEEP if i == 0 else FILL_DUPE_REVIEW
+            name      = f"{rec.get('givenName','')} {rec.get('familyName','')}".strip()
             email_raw = rec.get("emailAddress") or {}
-            email  = email_raw.get("value", "") if isinstance(email_raw, dict) else str(email_raw)
-            imp_date = extract_glueup_import_date(rec)
-            glu_id   = str(rec.get("id", ""))
-            notes    = "Most recent import date" if i == 0 else "Older record — cancel membership in GlueUp Admin UI"
+            email     = email_raw.get("value", "") if isinstance(email_raw, dict) else str(email_raw)
+            imp_date  = extract_glueup_import_date(rec)
+            glu_id    = str(rec.get("id", ""))
+            notes     = ("Most recent import date" if i == 0
+                         else "Older record — cancel membership in GlueUp Admin UI")
 
-            row_data = [action, icf_id, glu_id, name, email, imp_date, notes]
-            for col, val in enumerate(row_data, start=1):
+            for col, val in enumerate([action, icf_id, glu_id, name, email, imp_date, notes], start=1):
                 c = ws.cell(row=row_num, column=col, value=val)
                 c.fill = fill
                 c.alignment = Alignment(vertical="top")
-            row_num += 1
+            row_num    += 1
             dupe_count += 1
 
     if dupe_count == 0:
@@ -744,22 +977,24 @@ def write_duplicate_report(all_glueup_members, path):
 
 # ─── Main Processing Loop ─────────────────────────────────────────────────────
 
-def process_rows(rows, auth, dry_run=False):
+def process_rows(rows, glueup_by_email, glueup_by_member_id, dry_run=False):
     """
     Main per-record loop. Returns:
       contact_rows, membership_rows, comparison_data
     """
-    contact_rows     = []
-    membership_rows  = []
-    comparison_data  = []
-
-    counts = {"total": 0, "skipped": 0, "new": 0,
-              "existing_real": 0, "existing_shadow": 0, "errors": 0}
+    contact_rows    = []
+    membership_rows = []
+    comparison_data = []
+    counts = {"total": 0, "skipped": 0, "new": 0, "new_expired": 0,
+              "existing_real": 0, "existing_shadow": 0, "errors": 0, "fallback": 0}
+    total = len(rows)
 
     for row in rows:
         counts["total"] += 1
-        member_id = row.get("Member_ID", "").strip()
-        raw_email = row.get("Email", "").strip()
+        n         = counts["total"]
+        member_id = row.get(COL_MEMBER_ID, "").strip()
+        raw_email = row.get(COL_EMAIL, "").strip()
+        name_preview = f"{row.get(COL_FIRST_NAME,'')} {row.get(COL_LAST_NAME,'')}".strip()
 
         # Step 1: Skip check
         skip, skip_msg = should_skip(row)
@@ -768,55 +1003,39 @@ def process_rows(rows, auth, dry_run=False):
             counts["skipped"] += 1
             comparison_data.append({
                 "member_id": member_id,
-                "name": f"{row.get('First_Name','')} {row.get('Last_Name','')}".strip(),
-                "email": make_shadow_email(member_id),
+                "name":   name_preview,
+                "email":  make_shadow_email(member_id),
                 "status": "SKIPPED",
-                "diffs": [],
+                "diffs":  [],
             })
             continue
 
         # Step 2: Effective email
-        has_real_email = bool(raw_email)
+        has_real_email  = bool(raw_email)
         effective_email = raw_email.lower() if has_real_email else make_shadow_email(member_id)
 
-        # Steps 3-5: GlueUp lookup
-        glueup_rec = None
-        lookup_method = None
-
-        if not dry_run:
-            glueup_rec = lookup_by_email(effective_email, auth)
-            if glueup_rec:
-                lookup_method = "email"
-            else:
-                glueup_rec = lookup_by_member_id(member_id, auth)
-                if glueup_rec:
-                    lookup_method = "member_id"
+        # Steps 3–5: GlueUp lookup (in-memory dict — no API call per member)
+        glueup_rec = glueup_by_email.get(effective_email.lower())
+        if not glueup_rec:
+            counts["fallback"] += 1
+            glueup_rec = glueup_by_member_id.get(str(member_id))
 
         # Step 6: Status
-        is_new = glueup_rec is None
-
-        # Step 7: Comparison
-        diffs = compare_record(row, glueup_rec, effective_email)
-        any_diff = any(d["differs"] for d in diffs)
+        is_new    = glueup_rec is None
+        diffs     = compare_record(row, glueup_rec, effective_email)
+        any_diff  = any(d["differs"] for d in diffs)
 
         if is_new:
             status = "NEW"
             counts["new"] += 1
-        elif any_diff:
-            status = "CHANGED"
-            if has_real_email:
-                counts["existing_real"] += 1
-            else:
-                counts["existing_shadow"] += 1
         else:
-            status = "SAME"
+            status = "CHANGED" if any_diff else "SAME"
             if has_real_email:
                 counts["existing_real"] += 1
             else:
                 counts["existing_shadow"] += 1
 
-        name = f"{row.get('First_Name','')} {row.get('Last_Name','')}".strip()
-
+        name = f"{row.get(COL_FIRST_NAME,'')} {row.get(COL_LAST_NAME,'')}".strip()
         comparison_data.append({
             "member_id": member_id,
             "name":      name,
@@ -825,24 +1044,63 @@ def process_rows(rows, auth, dry_run=False):
             "diffs":     diffs,
         })
 
-        # Steps 8-10: Build import rows (always, regardless of status)
-        contact_rows.append(
-            build_contact_row(row, glueup_rec, effective_email, has_real_email)
-        )
-        membership_rows.append(
-            build_membership_row(row, glueup_rec, effective_email, has_real_email)
-        )
+        # Step 8: Contact import — NEW and CHANGED only
+        if status in ("NEW", "CHANGED"):
+            contact_rows.append(
+                build_contact_row(row, glueup_rec, effective_email, has_real_email)
+            )
+
+        # Step 9: Membership import:
+        #   NEW + Active status → create membership
+        #   NEW + non-Active (e.g. Expired) → contact only, no membership
+        #   CHANGED + membership field changed → update membership
+        member_status = row.get(COL_STATUS, "").strip()
+        is_active = member_status.lower() == "active"
+
+        if status == "NEW":
+            if not is_active:
+                # ICF Global has already marked them expired — contact only
+                counts["new_expired"] += 1
+            else:
+                # Active per ICF Global — check expiration date
+                expiry_str = row.get(COL_EXPIRY, "").strip()
+                expiry_passed = False
+                if expiry_str:
+                    try:
+                        expiry_dt = datetime.datetime.strptime(expiry_str, "%m/%d/%Y")
+                        expiry_passed = expiry_dt.date() < RUN_TS.date()
+                    except ValueError:
+                        pass
+                if expiry_passed:
+                    # ICF still says Active but expiry date has passed —
+                    # member is in grace period; let GlueUp handle it
+                    counts["new_expired"] += 1
+                else:
+                    membership_rows.append(
+                        build_membership_row(row, glueup_rec, effective_email, has_real_email)
+                    )
+        elif status == "CHANGED":
+            changed_field_labels = {d["field"] for d in diffs if d["differs"]}
+            membership_triggered = any(
+                lbl in {"Membership Expiration Date", "Auto Renewal"}
+                for lbl in changed_field_labels
+            )
+            if membership_triggered:
+                membership_rows.append(
+                    build_membership_row(row, glueup_rec, effective_email, has_real_email)
+                )
 
     log("")
     log("── Run Summary ──────────────────────────────────────────────")
-    log(f"  Total rows read:          {counts['total']}")
-    log(f"  Skipped (no data):        {counts['skipped']}")
-    log(f"  New (no GlueUp match):    {counts['new']}")
-    log(f"  Existing — real email:    {counts['existing_real']}")
-    log(f"  Existing — shadow email:  {counts['existing_shadow']}")
-    log(f"  Errors:                   {counts['errors']}")
-    log(f"  Contact rows to import:   {len(contact_rows)}")
-    log(f"  Membership rows to import:{len(membership_rows)}")
+    log(f"  Total rows read:           {counts['total']}")
+    log(f"  Skipped (no data):         {counts['skipped']}")
+    log(f"  New — Active:              {counts['new'] - counts['new_expired']}")
+    log(f"  New — no membership created (expired or in grace period): {counts['new_expired']}")
+    log(f"  Existing — real email:     {counts['existing_real']}")
+    log(f"  Existing — shadow email:   {counts['existing_shadow']}")
+    log(f"  Errors:                    {counts['errors']}")
+    log(f"  Contact rows to import:    {len(contact_rows)}")
+    log(f"  Membership rows to import: {len(membership_rows)}")
     log("─────────────────────────────────────────────────────────────")
 
     return contact_rows, membership_rows, comparison_data
@@ -850,66 +1108,77 @@ def process_rows(rows, auth, dry_run=False):
 # ─── Entry Point ──────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="GlobalGlueUpSync — ICF Washington State GlueUp Sync")
-    parser.add_argument("input_csv", help="Path to activemembers CSV from Make scenario")
-    parser.add_argument("--no-drive", action="store_true", help="Skip Google Drive upload")
-    parser.add_argument("--dry-run",  action="store_true", help="Process rows and print summary only; no output files written")
+    parser = argparse.ArgumentParser(
+        description="GlobalGlueUpSync — ICF Washington State GlueUp Sync"
+    )
+    parser.add_argument(
+        "input_csv", nargs="?", default=None,
+        help="Path to activemembers CSV. If omitted, auto-discovers the most "
+             "recently modified file with 'activemembers' in the name."
+    )
+    parser.add_argument("--no-drive", action="store_true",
+                        help="Skip Google Drive upload")
+    parser.add_argument("--dry-run",  action="store_true",
+                        help="Process all rows and print summary; do not write output files")
     args = parser.parse_args()
 
     log("=" * 61)
     log(f"  GlobalGlueUpSync.py  —  {RUN_TS.strftime('%Y-%m-%d %H:%M')}")
     log("=" * 61)
-    log(f"  Input:    {args.input_csv}")
+
+    # Resolve input file
+    if args.input_csv:
+        input_path = args.input_csv
+        log(f"  Input:    {input_path} (specified)")
+    else:
+        log("  Input:    (auto-discovering most recent activemembers file...)")
+        input_path = find_input_file()
+        log(f"  Input:    {input_path}")
+
     log(f"  Dry run:  {args.dry_run}")
     log(f"  No Drive: {args.no_drive}")
     log("")
 
-    # Load zip/region lookup
     log("Loading region lookup...")
     load_zip_region_lookup()
 
-    # Load input CSV
     log("Loading input CSV...")
-    rows = load_csv(args.input_csv)
+    rows = load_csv(input_path)
 
-    # Auth
     log("Loading GlueUp auth token...")
     auth = glueup_auth()
 
-    # Process
+    log("Fetching all GlueUp members...")
+    all_glueup = get_all_glueup_members(auth)
+    glueup_by_email, glueup_by_member_id = build_glueup_index(all_glueup)
+
     log("Processing members...")
-    contact_rows, membership_rows, comparison_data = process_rows(rows, auth, dry_run=args.dry_run)
+    contact_rows, membership_rows, comparison_data = process_rows(
+        rows, glueup_by_email, glueup_by_member_id, dry_run=args.dry_run
+    )
 
     if args.dry_run:
         log("Dry run — no files written.")
         return
 
-    # Output paths
-    contact_path    = f"contact_import_{RUN_TS_STR}.csv"
-    membership_path = f"membership_import_{RUN_TS_STR}.csv"
+    contact_path    = f"contact_import_{RUN_TS_STR}.xlsx"
+    membership_path = f"membership_import_{RUN_TS_STR}.xlsx"
     comparison_path = f"comparison_report_{RUN_TS_STR}.xlsx"
     duplicate_path  = f"duplicate_report_{RUN_TS_STR}.xlsx"
     log_path        = f"run_log_{RUN_TS_STR}.txt"
 
-    # Write import CSVs
     log("")
     log("Writing output files...")
-    write_csv(contact_rows,    contact_path,    CONTACT_FIELDNAMES)
-    write_csv(membership_rows, membership_path, MEMBERSHIP_FIELDNAMES)
-
-    # Write comparison report
+    write_import_xlsx(contact_rows,    contact_path,    CONTACT_FIELDNAMES)
+    write_import_xlsx(membership_rows, membership_path, MEMBERSHIP_FIELDNAMES)
     write_comparison_report(comparison_data, comparison_path)
 
-    # Fetch all GlueUp members for duplicate detection
-    log("Fetching GlueUp members for duplicate report...")
-    all_glueup = get_all_glueup_members(auth)
+    log("Writing duplicate report...")
     write_duplicate_report(all_glueup, duplicate_path)
 
-    # Save log
     save_log(log_path)
     log(f"  Written: {log_path}")
 
-    # Drive upload (stub — Open Item 6)
     if not args.no_drive:
         log("")
         log("Drive upload: skipped (Open Item 6 — Drive folder ID not configured).")
