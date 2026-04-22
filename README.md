@@ -4,7 +4,7 @@
 > This project is shared under the MIT License for use and adaptation by other ICF chapters
 > considering a migration to GlueUp. See [Adapting for Your Chapter](#adapting-for-your-chapter).
 
-**Current Phase:** Phase 0 — Permanent operational state (see [Phase Status](#phase-status))
+**Current Phase:** Phase 0/1 — Permanent operational state (see [Phase Status](#phase-status))
 
 ---
 
