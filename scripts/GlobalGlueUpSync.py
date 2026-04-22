@@ -2,7 +2,7 @@
 """
 GlobalGlueUpSync.py
 ICF Washington State Chapter — GlueUp Member Sync
-Version: 1.17
+Version: 1.19
 
 Reads the ICF Global active-member CSV (produced by the Get Active Members
 Make scenario), looks up each member in GlueUp by email then by ICF Member ID,
@@ -43,6 +43,19 @@ except ImportError:
     print("ERROR: openpyxl not installed. Run: pip3 install openpyxl --break-system-packages")
     sys.exit(1)
 
+# Google Drive upload (optional — only imported when Drive upload is attempted)
+# Install: pip3 install google-api-python-client google-auth-httplib2 google-auth-oauthlib --break-system-packages
+_DRIVE_LIBS_AVAILABLE = False
+try:
+    from googleapiclient.discovery import build as _gdrive_build
+    from googleapiclient.http import MediaFileUpload as _MediaFileUpload
+    from google.oauth2.credentials import Credentials as _GCredentials
+    from google_auth_oauthlib.flow import InstalledAppFlow as _InstalledAppFlow
+    from google.auth.transport.requests import Request as _GRequest
+    _DRIVE_LIBS_AVAILABLE = True
+except ImportError:
+    pass  # reported at upload time if Drive upload is attempted
+
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 GLUEUP_BASE_URL           = "https://api-services.glueup.com"
@@ -53,7 +66,10 @@ GLUEUP_MEMBERSHIP_TYPE_ID = 37600
 
 SHADOW_EMAIL_DOMAIN = "members.icfwashingtonstate.org"
 TOKEN_FILE          = "glueup_token.json"
-DRIVE_FOLDER_ID     = None   # Open Item 6 — set when Drive upload is re-enabled
+DRIVE_FOLDER_ID     = "1BQ53mlYzkl3N5wz6AiTZm1kDpibempJy"   # Shared Drive: Data-Transfer > Sync
+DRIVE_TOKEN_FILE    = "drive_token.json"
+DRIVE_CREDENTIALS   = "credentials.json"
+DRIVE_SCOPES        = ["https://www.googleapis.com/auth/drive.file"]
 
 RUN_TS            = datetime.datetime.now()
 RUN_DATE_MMDDYYYY = RUN_TS.strftime("%m/%d/%Y")
@@ -1105,6 +1121,153 @@ def process_rows(rows, glueup_by_email, glueup_by_member_id, dry_run=False):
 
     return contact_rows, membership_rows, comparison_data
 
+# ─── Google Drive Upload ──────────────────────────────────────────────────────
+
+def _get_drive_service():
+    """
+    Build and return an authenticated Google Drive service object.
+    Uses OAuth 2.0 with credentials.json (Desktop App type).
+    Caches the token in drive_token.json for subsequent runs.
+
+    Returns the service object, or None if auth fails.
+
+    One-time setup:
+      1. Enable the Google Drive API in Google Cloud Console.
+      2. Create OAuth 2.0 credentials (Desktop App type).
+      3. Download as credentials.json into the GG-Integration directory.
+      4. First run opens a browser for consent; subsequent runs use drive_token.json.
+
+    Future migration path (Open Item 15):
+      Replace OAuth with a service account:
+        from google.oauth2 import service_account
+        creds = service_account.Credentials.from_service_account_file(
+            "service_account.json", scopes=DRIVE_SCOPES)
+      Share the Drive folder with the service account email and remove
+      the credentials.json / drive_token.json flow below.
+    """
+    if not _DRIVE_LIBS_AVAILABLE:
+        log("  ERROR: Google Drive libraries not installed.")
+        log("  Run: pip3 install google-api-python-client google-auth-httplib2 google-auth-oauthlib --break-system-packages")
+        return None
+
+    creds = None
+
+    # Load cached token if available
+    if os.path.exists(DRIVE_TOKEN_FILE):
+        try:
+            creds = _GCredentials.from_authorized_user_file(DRIVE_TOKEN_FILE, DRIVE_SCOPES)
+        except Exception as e:
+            log(f"  WARNING: Could not load {DRIVE_TOKEN_FILE}: {e}  — will re-authenticate.")
+
+    # Refresh or obtain new credentials
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            try:
+                creds.refresh(_GRequest())
+            except Exception as e:
+                log(f"  WARNING: Token refresh failed: {e}  — will re-authenticate.")
+                creds = None
+
+        if not creds:
+            if not os.path.exists(DRIVE_CREDENTIALS):
+                log(f"  ERROR: {DRIVE_CREDENTIALS} not found.")
+                log("  See the Design Spec (Google Drive Setup section) for one-time setup instructions.")
+                return None
+            try:
+                flow = _InstalledAppFlow.from_client_secrets_file(DRIVE_CREDENTIALS, DRIVE_SCOPES)
+                creds = flow.run_local_server(port=0)
+            except Exception as e:
+                log(f"  ERROR: OAuth flow failed: {e}")
+                return None
+
+        # Save refreshed / new token for next run
+        try:
+            with open(DRIVE_TOKEN_FILE, "w") as f:
+                f.write(creds.to_json())
+        except Exception as e:
+            log(f"  WARNING: Could not save {DRIVE_TOKEN_FILE}: {e}")
+
+    try:
+        service = _gdrive_build("drive", "v3", credentials=creds)
+        return service
+    except Exception as e:
+        log(f"  ERROR: Failed to build Drive service: {e}")
+        return None
+
+
+def upload_to_drive(file_paths):
+    """
+    Upload output files to a new dated subfolder in the Sync Output Drive folder.
+
+    Creates:  Sync_YYYYMMDD_HHMM  inside DRIVE_FOLDER_ID
+    Uploads:  all files in file_paths into that subfolder
+
+    Logs each file uploaded and the shareable folder link.
+    On any failure: logs the error and continues (output files are always local).
+
+    Args:
+        file_paths: list of local file paths to upload
+    """
+    log("Uploading output files to Google Drive...")
+
+    service = _get_drive_service()
+    if service is None:
+        log("  Drive upload skipped — authentication failed (see above).")
+        log("  Output files are saved locally. Re-run with a working credentials.json to upload.")
+        return
+
+    # Create a dated subfolder inside the Sync Output folder
+    subfolder_name = f"Sync_{RUN_TS_STR}"
+    try:
+        folder_meta = {
+            "name":     subfolder_name,
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents":  [DRIVE_FOLDER_ID],
+        }
+        folder = service.files().create(
+            body=folder_meta,
+            fields="id,webViewLink",
+            supportsAllDrives=True,
+        ).execute()
+        folder_id   = folder.get("id")
+        folder_link = folder.get("webViewLink", "")
+        log(f"  Created subfolder: {subfolder_name}")
+        log(f"  Folder link: {folder_link}")
+    except Exception as e:
+        log(f"  ERROR: Could not create Drive subfolder '{subfolder_name}': {e}")
+        log("  Output files are saved locally.")
+        return
+
+    # Upload each file
+    MIME_MAP = {
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".txt":  "text/plain",
+    }
+    uploaded = 0
+    for path in file_paths:
+        if not os.path.exists(path):
+            log(f"  WARNING: Skipping missing file: {path}")
+            continue
+        ext      = os.path.splitext(path)[1].lower()
+        mimetype = MIME_MAP.get(ext, "application/octet-stream")
+        fname    = os.path.basename(path)
+        try:
+            file_meta = {"name": fname, "parents": [folder_id]}
+            media     = _MediaFileUpload(path, mimetype=mimetype, resumable=False)
+            service.files().create(
+                body=file_meta,
+                media_body=media,
+                fields="id",
+                supportsAllDrives=True,
+            ).execute()
+            log(f"  Uploaded: {fname}")
+            uploaded += 1
+        except Exception as e:
+            log(f"  WARNING: Failed to upload {fname}: {e}")
+
+    log(f"  Drive upload complete: {uploaded}/{len(file_paths)} files uploaded to {subfolder_name}.")
+
+
 # ─── Entry Point ──────────────────────────────────────────────────────────────
 
 def main():
@@ -1181,7 +1344,7 @@ def main():
 
     if not args.no_drive:
         log("")
-        log("Drive upload: skipped (Open Item 6 — Drive folder ID not configured).")
+        upload_to_drive([contact_path, membership_path, comparison_path, duplicate_path, log_path])
 
     log("")
     log("Done.")
