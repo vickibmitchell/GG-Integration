@@ -350,12 +350,11 @@ def main():
             skipped_has_region += 1
             continue
 
-        # Skip members where the lookup can't find a region — nothing to set
+        # Members with no lookup match get "No Region" explicitly written
         if new_region == "No Region":
             skipped_no_region += 1
             first, last = get_name(rec)
-            log(f"  SKIP (no lookup match): {first} {last} | city={city!r} zip={zip_code!r}")
-            continue
+            log(f"  NOTE (no lookup match): {first} {last} | city={city!r} zip={zip_code!r} → 'No Region'")
 
         import_rows.append(build_import_row(rec, new_region))
 
@@ -363,7 +362,7 @@ def main():
     log(f"\n{'─'*60}")
     log(f"  Total GlueUp records:         {count_total}")
     log(f"  Already have a Local Region:  {skipped_has_region}")
-    log(f"  No lookup match (skipped):    {skipped_no_region}")
+    log(f"  No lookup match (→ No Region):{skipped_no_region}")
     log(f"  Will be updated:              {len(import_rows)}")
     log(f"{'─'*60}")
 
