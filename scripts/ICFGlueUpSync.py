@@ -1,9 +1,27 @@
 """
-ICFGlueUpSync.py  —  v1.6.1  (2026-04-18)
+ICFGlueUpSync.py  —  v1.7.0  (2026-05-15)
 ICF Washington State Chapter — GlueUp Member Sync Comparison Tool
 
 CHANGELOG
 ---------
+v1.7.0  2026-05-15
+  - Cloud Run migration (Open Item 15): replaced OAuth 2.0 browser flow in
+    _get_drive_service() with Application Default Credentials (ADC). When
+    running on Cloud Run the service account assigned to the job supplies
+    credentials automatically via the GCP metadata server — no key file or
+    browser interaction required. Local execution continues to work via
+    'gcloud auth application-default login'.
+  - Added _load_secrets_from_secret_manager() helper. When the environment
+    variable GLUEUP_USE_SECRET_MANAGER=1 is set (as it will be in Cloud Run),
+    GLUEUP_SK and GLUEUP_MD5_PW are pulled from GCP Secret Manager at startup,
+    overriding the hardcoded fallback values. The GCP project ID is read from
+    GOOGLE_CLOUD_PROJECT (set automatically by Cloud Run).
+  - Hardcoded credential fallbacks retained for local execution compatibility.
+  - DRIVE_SCOPES broadened from drive.file to drive so the service account
+    can access files in Shared Drives it has been granted Content Manager on.
+  - Removed drive_token.json and credentials.json references (no longer used
+    in Cloud Run; local ADC flow does not require them).
+
 v1.6.1  2026-04-18
   - Removed 'creation date' → 'Chapter_Start_Date' alias from HEADER_ALIASES.
     The Make CSV has both a real 'Chapter_Start_Date' column (col L, populated)
@@ -195,7 +213,8 @@ environment variables:
 
 REQUIREMENTS
 ------------
-    pip install openpyxl requests
+    pip install openpyxl requests google-api-python-client google-auth
+    google-auth-httplib2 google-cloud-secret-manager
 """
 
 import csv
@@ -217,6 +236,11 @@ from openpyxl.utils import get_column_letter
 # ──────────────────────────────────────────────────────────────────────────────
 # CREDENTIALS — edit here or set as environment variables
 # ──────────────────────────────────────────────────────────────────────────────
+# When running on Cloud Run, GLUEUP_USE_SECRET_MANAGER=1 is set as an
+# environment variable and secrets are fetched from GCP Secret Manager at
+# startup (see _load_secrets_from_secret_manager() below), overriding the
+# hardcoded fallback values here. For local execution, the fallback values
+# are used directly — no Secret Manager access required.
 GLUEUP_PK       = os.environ.get('GLUEUP_PK',      'icfwshts')
 GLUEUP_SK       = os.environ.get('GLUEUP_SK',      'MF4CAQACEADAzyLnyJdLTnvVextU0XMCAwEAAQIQAKT41snxxRoPfXb0gguT2QIIDoAWHftn8h0CCA1L/8fNanzPAggAksHNF6ZpZQIIARa17LAfBfUCCAP67vZiAQ55')
 GLUEUP_MD5_PW   = os.environ.get('GLUEUP_MD5_PW',  '70bdb05ade647079069cfebed391758a')
@@ -326,8 +350,9 @@ COUNTRY_CODES = {
 
 # Google Drive — Sync Output folder
 DRIVE_SYNC_FOLDER_ID = '1BQ53mlYzkl3N5wz6AiTZm1kDpibempJy'
-DRIVE_SCOPES         = ['https://www.googleapis.com/auth/drive.file']
-DRIVE_TOKEN_FILE     = 'drive_token.json'
+# drive scope (not drive.file) is required so the service account can access
+# files in Shared Drives it has been granted Content Manager on.
+DRIVE_SCOPES         = ['https://www.googleapis.com/auth/drive']
 
 # Fields compared between ICF Global and GlueUp.
 # Each entry: (icf_column_name, glueup_field_path, label_for_report)
@@ -419,6 +444,55 @@ COLOR_CHANGED   = 'FFEB9C'   # yellow
 COLOR_SAME      = 'FFFFFF'   # white
 COLOR_HEADER    = '4472C4'   # blue
 COLOR_DUPLICATE = 'FFC7CE'   # red
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SECRET MANAGER (Cloud Run only)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _load_secrets_from_secret_manager() -> None:
+    """
+    Fetch GLUEUP_SK and GLUEUP_MD5_PW from GCP Secret Manager and override
+    the module-level globals. Only runs when GLUEUP_USE_SECRET_MANAGER=1 is
+    set in the environment (i.e. when running on Cloud Run).
+
+    The GCP project ID is read from GOOGLE_CLOUD_PROJECT, which Cloud Run
+    sets automatically. Secret names must match what was created in Secret
+    Manager: 'glueup-private-key' and 'glueup-md5-password'.
+    """
+    global GLUEUP_SK, GLUEUP_MD5_PW
+
+    if os.environ.get('GLUEUP_USE_SECRET_MANAGER') != '1':
+        return
+
+    try:
+        from google.cloud import secretmanager
+    except ImportError:
+        print('WARNING: google-cloud-secret-manager not installed. '
+              'Using hardcoded credential fallbacks.')
+        return
+
+    project_id = os.environ.get('GOOGLE_CLOUD_PROJECT')
+    if not project_id:
+        print('WARNING: GOOGLE_CLOUD_PROJECT not set. '
+              'Using hardcoded credential fallbacks.')
+        return
+
+    client = secretmanager.SecretManagerServiceClient()
+
+    def _get_secret(secret_id: str) -> str:
+        name = f'projects/{project_id}/secrets/{secret_id}/versions/latest'
+        response = client.access_secret_version(request={'name': name})
+        return response.payload.data.decode('utf-8').strip()
+
+    print('Loading secrets from GCP Secret Manager...')
+    GLUEUP_SK     = _get_secret('glueup-private-key')
+    GLUEUP_MD5_PW = _get_secret('glueup-md5-password')
+    print('  ✓ Secrets loaded.')
+
+
+# Call at import time so globals are set before any function uses them.
+_load_secrets_from_secret_manager()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1682,47 +1756,29 @@ def write_duplicate_file(duplicates: list[dict], output_path: str):
 
 def _get_drive_service():
     """
-    Return an authenticated Google Drive service object using OAuth 2.0.
+    Return an authenticated Google Drive service object.
 
-    Requires credentials.json (OAuth 2.0 Desktop App) in the working directory.
-    Caches the token in drive_token.json after first auth.
+    Authentication strategy (in priority order):
+    1. Cloud Run: the service account assigned to the Cloud Run job supplies
+       credentials automatically via the GCP metadata server — no key file
+       or environment variable needed. Application Default Credentials (ADC)
+       picks this up transparently.
+    2. Local development: run 'gcloud auth application-default login' once
+       to cache credentials in ~/.config/gcloud/. ADC finds them automatically.
 
-    Migration path to service account:
-        from google.oauth2 import service_account
-        creds = service_account.Credentials.from_service_account_file(
-            'service_account.json', scopes=DRIVE_SCOPES)
-        from googleapiclient.discovery import build
-        return build('drive', 'v3', credentials=creds)
+    The service account must be granted Content Manager (or Editor) on the
+    two Shared Drive folders used by this script.
     """
     try:
-        from google.oauth2.credentials import Credentials
-        from google_auth_oauthlib.flow import InstalledAppFlow
-        from google.auth.transport.requests import Request as GRequest
+        from google.auth import default as google_auth_default
         from googleapiclient.discovery import build
     except ImportError:
         print('\nERROR: Google API libraries not installed.')
-        print('Run: pip3 install google-api-python-client google-auth-httplib2 '
-              'google-auth-oauthlib --break-system-packages')
+        print('Run: pip install google-api-python-client google-auth '
+              'google-auth-httplib2')
         sys.exit(1)
 
-    creds = None
-    if os.path.exists(DRIVE_TOKEN_FILE):
-        creds = Credentials.from_authorized_user_file(DRIVE_TOKEN_FILE, DRIVE_SCOPES)
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(GRequest())
-        else:
-            if not os.path.exists('credentials.json'):
-                print('\nERROR: credentials.json not found in the current directory.')
-                print('Download OAuth 2.0 credentials (Desktop app type) from Google Cloud Console')
-                print('and save as credentials.json in the GG-Integration directory, then re-run.')
-                sys.exit(1)
-            flow = InstalledAppFlow.from_client_secrets_file('credentials.json', DRIVE_SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open(DRIVE_TOKEN_FILE, 'w') as tf:
-            tf.write(creds.to_json())
-
+    creds, _ = google_auth_default(scopes=DRIVE_SCOPES)
     return build('drive', 'v3', credentials=creds)
 
 
