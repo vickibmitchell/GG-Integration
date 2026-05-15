@@ -1,9 +1,86 @@
 """
-ICFGlueUpSync.py  —  v1.7.2  (2026-05-15)
+ICFGlueUpSync.py  —  v1.8.1  (2026-05-15)
 ICF Washington State Chapter — GlueUp Member Sync Comparison Tool
 
 CHANGELOG
 ---------
+v1.8.1  2026-05-15
+  - Replaced Gmail API impersonation approach with SendGrid HTTP API for
+    email notifications. All previous JWT/impersonation/domain-delegation
+    complexity removed. SendGrid requires only an API key stored in Secret
+    Manager (secret name: sendgrid-api-key). Emails send from
+    technology@icfwashingtonstate.org (verified SendGrid sender) to
+    GlueUpNotifiers@icfwashingtonstate.org.
+  - Added _get_sendgrid_api_key() and _send_email() helpers used by both
+    send_import_ready_notification() and send_no_inbound_file_warning().
+  - Removed GMAIL_SA_EMAIL constant and all Gmail API dependencies.
+
+v1.8.0  2026-05-15
+  - Reworked _get_gmail_service() to use explicit JWT signing via the IAM
+    signJwt API rather than google.auth.impersonated_credentials. The
+    impersonated_credentials approach failed with "Gaia id not found" on
+    Cloud Run. The new approach: (1) get source ADC token, (2) sign a JWT
+    asserting sub=technology@ via IAM signJwt, (3) exchange for an OAuth2
+    access token, (4) build Gmail service with that token. Requires
+    roles/iam.serviceAccountTokenCreator on the service account.
+
+v1.7.9  2026-05-15
+  - Fixed Gmail impersonation: replaced with_subject() approach (not supported
+    on ADC credentials) with google.auth.impersonated_credentials.Credentials,
+    which is the correct ADC-compatible way to impersonate a Workspace user
+    from a Cloud Run service account. Extracted _get_gmail_service() helper
+    used by both notification functions.
+
+v1.7.8  2026-05-15
+  - Added send_no_inbound_file_warning(): when no activemembers CSV is found
+    in the Drive Inbound folder, sends a warning email to GlueUpNotifiers@
+    explaining the likely cause (Make scenario failure) and steps to recover.
+  - No-inbound-file condition now exits with code 0 (clean exit) rather than
+    letting FileNotFoundError propagate as an unhandled exception — the
+    condition is expected and handled, not a crash. Cloud Run will show the
+    execution as succeeded rather than failed.
+  - Warning email is suppressed when --no-drive is set (local testing).
+
+v1.7.7  2026-05-15
+  - Updated NOTIFY_TO from technology@ to GlueUpNotifiers@icfwashingtonstate.org
+    so the import-ready notification goes to the correct distribution list.
+
+v1.7.6  2026-05-15
+  - Added send_import_ready_notification(): after a successful Drive upload,
+    sends a 'GlueUp Import Ready' email to technology@icfwashingtonstate.org
+    via the Gmail API using domain-wide delegation. Email includes sync summary
+    (NEW/CHANGED/DROPPED/DUPLICATE counts) and a direct link to the Sync
+    output folder. Requires Gmail API enabled in GCP and domain-wide delegation
+    granted in Workspace Admin for client ID 103858063566303479464 with scope
+    https://www.googleapis.com/auth/gmail.send.
+  - Notification only fires on Cloud Run runs (when drive_file_id is set) —
+    local runs are unaffected to avoid spurious emails during testing.
+  - Added NOTIFY_FROM, NOTIFY_TO, and GMAIL_SA_EMAIL constants.
+
+v1.7.5  2026-05-15
+  - Fixed move_inbound_file_to_processed(): removed includeItemsFromAllDrives
+    from files.update() call — that parameter is only valid on files.list(),
+    not files.update(). supportsAllDrives=True is sufficient for the move.
+
+v1.7.4  2026-05-15
+  - Fixed move_inbound_file_to_processed(): added includeItemsFromAllDrives=True
+    to the files.update() call — required for Shared Drive targets in addition
+    to supportsAllDrives=True.
+  - Separated the Drive move into its own try/except block in main() so a move
+    failure no longer masks a successful upload. If the move fails, the upload
+    result is still reported correctly and the file ID is printed for manual
+    remediation.
+
+v1.7.3  2026-05-15
+  - Added move_inbound_file_to_processed(): after a successful Drive upload,
+    the activemembers CSV is moved from Data-Transfer > Inbound to
+    Data-Transfer > Processed so it is not picked up again on the next run.
+    Move only occurs when the file was downloaded from Drive (Cloud Run path)
+    and Drive upload succeeded — local runs and --no-drive runs are unaffected.
+    Added DRIVE_PROCESSED_FOLDER_ID constant.
+  - download_latest_icf_file_from_drive() now returns (local_path, file_id)
+    tuple so main() can pass the Drive file ID to the move function.
+
 v1.7.2  2026-05-15
   - Fixed upload_to_drive() for Shared Drive: added supportsAllDrives=True
     to both the folder create and file create API calls. Without this flag
@@ -365,8 +442,9 @@ COUNTRY_CODES = {
 
 
 # Google Drive folders
-DRIVE_INBOUND_FOLDER_ID  = '1j-jfB8MvP7kaIagDO9A3Dy8RxEkFqXXP'  # Data Transfer > Inbound
-DRIVE_SYNC_FOLDER_ID     = '1BQ53mlYzkl3N5wz6AiTZm1kDpibempJy'   # Data-Transfer > Sync
+DRIVE_INBOUND_FOLDER_ID   = '1j-jfB8MvP7kaIagDO9A3Dy8RxEkFqXXP'  # Data Transfer > Inbound
+DRIVE_PROCESSED_FOLDER_ID = '1HSfnpqX8KeuJrmVsLEP7K5k2HsyUK98E'  # Data Transfer > Processed
+DRIVE_SYNC_FOLDER_ID      = '1BQ53mlYzkl3N5wz6AiTZm1kDpibempJy'   # Data-Transfer > Sync
 # drive scope (not drive.file) is required so the service account can access
 # files in Shared Drives it has been granted Content Manager on.
 DRIVE_SCOPES             = ['https://www.googleapis.com/auth/drive']
@@ -657,10 +735,13 @@ def find_latest_icf_file() -> str:
     return max(candidates, key=os.path.getmtime)
 
 
-def download_latest_icf_file_from_drive() -> str:
+def download_latest_icf_file_from_drive() -> tuple[str, str]:
     """
     Find the most recent activemembers_*.csv in the Drive Inbound folder
-    and download it to /tmp/. Returns the local file path.
+    and download it to /tmp/. Returns (local_path, drive_file_id).
+
+    The drive_file_id is returned so the caller can move the file to the
+    Processed folder after a successful run.
 
     Used by Cloud Run where there is no local file — the CSV lives in Drive,
     placed there by the Make 'Get Active Members' scenario.
@@ -717,7 +798,7 @@ def download_latest_icf_file_from_drive() -> str:
             _, done = downloader.next_chunk()
 
     print(f'  ✓ Downloaded: {file_name}')
-    return local_path
+    return local_path, file_id
 
 
 def fmt_date(val) -> str:
@@ -1907,6 +1988,162 @@ def upload_to_drive(file_paths: list[str], timestamp: str) -> str:
     return folder_url
 
 
+def move_inbound_file_to_processed(file_id: str, file_name: str) -> None:
+    """
+    Move the processed activemembers CSV from the Inbound folder to the
+    Processed folder so it is not picked up again on the next run.
+
+    Uses the Drive files.update() call with addParents/removeParents —
+    this is a move, not a copy. supportsAllDrives=True is required for
+    Shared Drive operations.
+    """
+    print(f'\nMoving {file_name} to Processed folder...')
+    service = _get_drive_service()
+    service.files().update(
+        fileId=file_id,
+        addParents=DRIVE_PROCESSED_FOLDER_ID,
+        removeParents=DRIVE_INBOUND_FOLDER_ID,
+        fields='id, parents',
+        supportsAllDrives=True,
+    ).execute()
+    print(f'  ✓ Moved to Data-Transfer > Processed.')
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GMAIL NOTIFICATION
+# ──────────────────────────────────────────────────────────────────────────────
+
+NOTIFY_FROM    = 'technology@icfwashingtonstate.org'
+NOTIFY_TO      = 'GlueUpNotifiers@icfwashingtonstate.org'
+
+
+def _get_sendgrid_api_key() -> str:
+    """Fetch the SendGrid API key from Secret Manager."""
+    from google.cloud import secretmanager
+    client = secretmanager.SecretManagerServiceClient()
+    project_id = os.environ.get('GOOGLE_CLOUD_PROJECT', 'gg-sync-492000')
+    name = f'projects/{project_id}/secrets/sendgrid-api-key/versions/latest'
+    return client.access_secret_version(
+        request={'name': name}
+    ).payload.data.decode('utf-8').strip()
+
+
+def _send_email(subject: str, body: str) -> None:
+    """
+    Send a plain-text email via SendGrid HTTP API.
+    From: ICF WA GlueUp Sync <technology@icfwashingtonstate.org>
+    To:   GlueUpNotifiers@icfwashingtonstate.org
+    """
+    api_key = _get_sendgrid_api_key()
+    payload = {
+        'personalizations': [{'to': [{'email': NOTIFY_TO}]}],
+        'from': {'email': NOTIFY_FROM, 'name': 'ICF WA GlueUp Sync'},
+        'subject': subject,
+        'content': [{'type': 'text/plain', 'value': body}],
+    }
+    resp = requests.post(
+        'https://api.sendgrid.com/v3/mail/send',
+        json=payload,
+        headers={
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json',
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+
+
+def send_import_ready_notification(
+    folder_url: str,
+    timestamp: str,
+    new_count: int,
+    changed_count: int,
+    dropped_count: int,
+    duplicate_count: int,
+) -> None:
+    """
+    Send a 'GlueUp Import Ready' notification via SendGrid after a
+    successful sync run.
+    """
+    print('\nSending import-ready notification email...')
+    date_display = datetime.strptime(timestamp, '%Y%m%d_%H%M').strftime('%B %d, %Y %I:%M %p')
+
+    subject = f'GlueUp Import Ready — {date_display}'
+    body = f"""GlueUp Import Ready — {date_display}
+
+The weekly ICF Global → GlueUp member sync has completed successfully.
+
+SUMMARY
+-------
+  New members:       {new_count}
+  Changed members:   {changed_count}
+  Dropped members:   {dropped_count}
+  Duplicates found:  {duplicate_count}
+
+ACTION REQUIRED
+---------------
+1. Open the Sync output folder in Google Drive:
+   {folder_url}
+
+2. Download glueup_import_*.xlsx and upload it via:
+   GlueUp Admin UI → Members → Import
+
+3. Review dropped_members_*.xlsx and cancel any memberships in GlueUp
+   for members no longer in the ICF Global export.
+
+4. Review duplicate_members_*.xlsx and delete RED-flagged duplicate
+   membership records in GlueUp Admin UI.
+
+—
+Sent automatically by ICFGlueUpSync v{SCRIPT_VERSION} running on Google Cloud Run.
+"""
+    try:
+        _send_email(subject, body)
+        print(f'  ✓ Notification sent to {NOTIFY_TO}.')
+    except Exception as e:
+        print(f'  ⚠  Notification email failed: {e}')
+        print('Sync completed successfully. Send notification manually.')
+
+
+def send_no_inbound_file_warning() -> None:
+    """
+    Send a warning email when no activemembers CSV is found in the Inbound
+    folder. This likely indicates the Make 'Get Active Members' scenario
+    did not run as scheduled.
+    """
+    print('\nSending no-inbound-file warning email...')
+    date_display = datetime.now().strftime('%B %d, %Y')
+
+    subject = f'⚠ GlueUp Sync Warning — No Inbound File ({date_display})'
+    body = f"""GlueUp Sync Warning — No Inbound File Found ({date_display})
+
+The weekly ICF Global → GlueUp member sync ran but found no input file
+in the Google Drive Inbound folder.
+
+This likely means the Make 'Get Active Members' scenario did not run
+as scheduled. Please check:
+
+1. Make scenario status:
+   make.com → Scenarios → ICF Chapter API — Get Active Members
+
+2. Google Drive Inbound folder:
+   Data-Transfer > Inbound
+
+If Make ran successfully, check whether the file was placed in the
+correct folder. If Make did not run, trigger it manually and then
+re-run the Cloud Run sync job from the GCP console:
+   console.cloud.google.com → Cloud Run → Jobs → glueup-sync → Execute
+
+—
+Sent automatically by ICFGlueUpSync v{SCRIPT_VERSION} running on Google Cloud Run.
+"""
+    try:
+        _send_email(subject, body)
+        print(f'  ✓ Warning sent to {NOTIFY_TO}.')
+    except Exception as e:
+        print(f'  ⚠  Could not send warning email: {e}')
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # MAIN
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1947,13 +2184,23 @@ def main():
     # The Drive fallback is used by Cloud Run where the CSV lives in the
     # Drive Inbound folder (placed there by the Make scenario) rather than
     # on the local filesystem.
+    drive_file_id = None   # set only when file came from Drive; used for move-to-processed
     if args.icf_file:
         icf_path = args.icf_file
     else:
         try:
             icf_path = find_latest_icf_file()
         except FileNotFoundError:
-            icf_path = download_latest_icf_file_from_drive()
+            try:
+                icf_path, drive_file_id = download_latest_icf_file_from_drive()
+            except FileNotFoundError as e:
+                # No file in Drive Inbound — likely a Make failure.
+                # Send a warning email and exit cleanly (not an error).
+                print(f'\n⚠  {e}')
+                if not args.no_drive:
+                    send_no_inbound_file_warning()
+                print('\nNothing to process. Exiting.')
+                sys.exit(0)
 
     if not Path(icf_path).exists():
         print(f'ERROR: File not found: {icf_path}')
@@ -2034,7 +2281,7 @@ def main():
     print(f'  Dropped members   : {dropped_path}')
     print('=' * 60)
 
-    # Step 7: Google Drive upload
+    # Step 7: Google Drive upload + move inbound file to Processed + notify
     if args.no_drive:
         print('\n(Drive upload skipped — --no-drive flag set)')
     else:
@@ -2044,6 +2291,42 @@ def main():
         except Exception as e:
             print(f'\n⚠  Drive upload failed: {e}')
             print('Output files saved locally. Re-run with --no-drive to skip upload.')
+            return
+
+        # Move the inbound CSV to Processed so it isn't picked up again.
+        # Only applies when the file was downloaded from Drive (Cloud Run path).
+        # Runs after upload succeeds — kept separate so a move failure doesn't
+        # mask a successful upload.
+        if drive_file_id:
+            try:
+                move_inbound_file_to_processed(
+                    drive_file_id, os.path.basename(icf_path)
+                )
+            except Exception as e:
+                print(f'\n⚠  Could not move inbound file to Processed: {e}')
+                print('Output files were uploaded successfully. Move the CSV manually:'
+                      f'\n  File ID: {drive_file_id}'
+                      f'\n  From: Data-Transfer > Inbound'
+                      f'\n  To:   Data-Transfer > Processed')
+
+        # Send import-ready notification email.
+        # Only fires when running via Cloud Run (drive_file_id is set).
+        # Skipped for local runs to avoid spurious emails during testing.
+        if drive_file_id:
+            try:
+                send_import_ready_notification(
+                    folder_url  = folder_url,
+                    timestamp   = date_stamp,
+                    new_count   = new_count,
+                    changed_count = changed_count,
+                    dropped_count = len(dropped),
+                    duplicate_count = len(set(
+                        d['ICF Global Member ID'] for d in duplicates
+                    )),
+                )
+            except Exception as e:
+                print(f'\n⚠  Notification email failed: {e}')
+                print('Sync completed successfully. Send notification manually.')
 
 
 if __name__ == '__main__':
