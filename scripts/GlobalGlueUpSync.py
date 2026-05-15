@@ -2,24 +2,39 @@
 """
 GlobalGlueUpSync.py
 ICF Washington State Chapter — GlueUp Member Sync
-Version: 1.19
+Version: 2.0.1
 
-Reads the ICF Global active-member CSV (produced by the Get Active Members
-Make scenario), looks up each member in GlueUp by email then by ICF Member ID,
-and produces five output files:
-  - contact_import_YYYYMMDD_HHMM.xlsx
-  - membership_import_YYYYMMDD_HHMM.xlsx
-  - comparison_report_YYYYMMDD_HHMM.xlsx
-  - duplicate_report_YYYYMMDD_HHMM.xlsx
-  - run_log_YYYYMMDD_HHMM.txt
+CHANGELOG
+---------
+v2.0.1  2026-05-15
+  - Updated import-ready notification email: steps 2 and 3 now correctly
+    reference contact_import_*.xlsx (Contacts → Import) and
+    membership_import_*.xlsx (Memberships → Import) separately, and
+    reference the "ICF Global GlueUp Sync Operations" doc for full instructions.
 
-Usage:
-  python3 GlobalGlueUpSync.py               # auto-discovers most recent activemembers*.csv
-  python3 GlobalGlueUpSync.py <file.csv>    # use a specific file
-  python3 GlobalGlueUpSync.py --no-drive
-  python3 GlobalGlueUpSync.py --dry-run
+v2.0.0  2026-05-15
+  - Cloud Run migration: replaced OAuth 2.0 browser flow in _get_drive_service()
+    with Application Default Credentials (ADC). On Cloud Run the service account
+    supplies credentials automatically; locally use 'gcloud auth application-default login'.
+  - GlueUp auth: replaced token-file approach (glueup_token.json) with direct
+    HMAC-SHA256 authentication. glueup_auth() now calls the GlueUp session
+    endpoint and returns a live token — no pre-generated token file required.
+  - Secret Manager: added _load_secrets_from_secret_manager() — when
+    GLUEUP_USE_SECRET_MANAGER=1 is set (Cloud Run), GLUEUP_SK is fetched
+    from GCP Secret Manager at startup, overriding the hardcoded fallback.
+  - Drive download: added download_latest_icf_file_from_drive() — when no
+    local activemembers CSV is found, the script downloads the most recent
+    one from the Drive Inbound folder (DRIVE_INBOUND_FOLDER_ID).
+  - Drive move: after successful upload, the inbound CSV is moved to the
+    Processed folder (DRIVE_PROCESSED_FOLDER_ID) so it is not reprocessed.
+  - Notifications: added SendGrid email notifications — 'Import Ready' after
+    a successful run, 'No Inbound File' warning when the Inbound folder is empty.
+  - DRIVE_SCOPES broadened from drive.file to drive for Shared Drive access.
+  - Added DRIVE_INBOUND_FOLDER_ID and DRIVE_PROCESSED_FOLDER_ID constants.
+  - Added GLUEUP_MD5_PW and GLUEUP_EMAIL constants for headless auth.
+  - Removed DRIVE_TOKEN_FILE, DRIVE_CREDENTIALS, TOKEN_FILE references.
 
-See GlueUp_Sync_Design_Spec for full field and logic documentation.
+v1.19  (previous release — local machine only)
 """
 
 import argparse
@@ -36,6 +51,8 @@ from collections import defaultdict
 from urllib.request import urlopen, Request
 from urllib.error import HTTPError, URLError
 
+import requests as _requests
+
 try:
     import openpyxl
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
@@ -43,15 +60,14 @@ except ImportError:
     print("ERROR: openpyxl not installed. Run: pip3 install openpyxl --break-system-packages")
     sys.exit(1)
 
-# Google Drive upload (optional — only imported when Drive upload is attempted)
-# Install: pip3 install google-api-python-client google-auth-httplib2 google-auth-oauthlib --break-system-packages
+# Google Drive upload — uses Application Default Credentials (ADC)
+# On Cloud Run: service account credentials supplied automatically.
+# Locally: run 'gcloud auth application-default login' once.
 _DRIVE_LIBS_AVAILABLE = False
 try:
     from googleapiclient.discovery import build as _gdrive_build
     from googleapiclient.http import MediaFileUpload as _MediaFileUpload
-    from google.oauth2.credentials import Credentials as _GCredentials
-    from google_auth_oauthlib.flow import InstalledAppFlow as _InstalledAppFlow
-    from google.auth.transport.requests import Request as _GRequest
+    from google.auth import default as _google_auth_default
     _DRIVE_LIBS_AVAILABLE = True
 except ImportError:
     pass  # reported at upload time if Drive upload is attempted
@@ -61,15 +77,22 @@ except ImportError:
 GLUEUP_BASE_URL           = "https://api-services.glueup.com"
 GLUEUP_ORG_ID             = "7912"
 GLUEUP_PK                 = "icfwshts"
-GLUEUP_SK                 = "MF4CAQACEADAzyLnyJdLTnvVextU0XMCAwEAAQIQAKT41snxxRoPfXb0gguT2QIIDoAWHftn8h0CCA1L/8fNanzPAggAksHNF6ZpZQIIARa17LAfBfUCCAP67vZiAQ55"
+GLUEUP_SK                 = os.environ.get("GLUEUP_SK", "MF4CAQACEADAzyLnyJdLTnvVextU0XMCAwEAAQIQAKT41snxxRoPfXb0gguT2QIIDoAWHftn8h0CCA1L/8fNanzPAggAksHNF6ZpZQIIARa17LAfBfUCCAP67vZiAQ55")
+GLUEUP_MD5_PW             = os.environ.get("GLUEUP_MD5_PW", "70bdb05ade647079069cfebed391758a")
+GLUEUP_EMAIL              = os.environ.get("GLUEUP_EMAIL", "technology@icfwashingtonstate.org")
 GLUEUP_MEMBERSHIP_TYPE_ID = 37600
 
-SHADOW_EMAIL_DOMAIN = "members.icfwashingtonstate.org"
-TOKEN_FILE          = "glueup_token.json"
-DRIVE_FOLDER_ID     = "1BQ53mlYzkl3N5wz6AiTZm1kDpibempJy"   # Shared Drive: Data-Transfer > Sync
-DRIVE_TOKEN_FILE    = "drive_token.json"
-DRIVE_CREDENTIALS   = "credentials.json"
-DRIVE_SCOPES        = ["https://www.googleapis.com/auth/drive.file"]
+SHADOW_EMAIL_DOMAIN       = "members.icfwashingtonstate.org"
+
+# Google Drive folders
+DRIVE_INBOUND_FOLDER_ID   = "1j-jfB8MvP7kaIagDO9A3Dy8RxEkFqXXP"   # Data-Transfer > Inbound
+DRIVE_PROCESSED_FOLDER_ID = "1HSfnpqX8KeuJrmVsLEP7K5k2HsyUK98E"   # Data-Transfer > Processed
+DRIVE_FOLDER_ID           = "1BQ53mlYzkl3N5wz6AiTZm1kDpibempJy"   # Data-Transfer > Sync
+DRIVE_SCOPES              = ["https://www.googleapis.com/auth/drive"]
+
+# Notification
+NOTIFY_FROM = "technology@icfwashingtonstate.org"
+NOTIFY_TO   = "GlueUpNotifiers@icfwashingtonstate.org"
 
 RUN_TS            = datetime.datetime.now()
 RUN_DATE_MMDDYYYY = RUN_TS.strftime("%m/%d/%Y")
@@ -168,19 +191,41 @@ def save_log(path):
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(_log_lines))
 
+# ─── Secret Manager (Cloud Run only) ─────────────────────────────────────────
+
+def _load_secrets_from_secret_manager():
+    """Override GLUEUP_SK from GCP Secret Manager when running on Cloud Run."""
+    global GLUEUP_SK
+    if os.environ.get("GLUEUP_USE_SECRET_MANAGER") != "1":
+        return
+    try:
+        from google.cloud import secretmanager
+        project_id = os.environ.get("GOOGLE_CLOUD_PROJECT", "gg-sync-492000")
+        client = secretmanager.SecretManagerServiceClient()
+
+        def _get(secret_id):
+            name = f"projects/{project_id}/secrets/{secret_id}/versions/latest"
+            return client.access_secret_version(request={"name": name}).payload.data.decode().strip()
+
+        print("Loading secrets from GCP Secret Manager...")
+        GLUEUP_SK = _get("glueup-private-key")
+        print("  ✓ Secrets loaded.")
+    except Exception as e:
+        print(f"WARNING: Could not load secrets from Secret Manager: {e}. Using hardcoded fallbacks.")
+
+_load_secrets_from_secret_manager()
+
+
 # ─── Input file discovery ─────────────────────────────────────────────────────
 
 def find_input_file():
     """
     Find the most recently modified file with 'activemembers' in its name
-    in the current directory. Returns the path, or exits with an error.
+    in the current directory. Returns the path, or raises FileNotFoundError.
     """
     candidates = glob.glob("*activemembers*")
     if not candidates:
-        log("ERROR: No file with 'activemembers' in the name found in the current directory.")
-        log("  Either run the Get Active Members Make scenario first, or pass the file path explicitly.")
-        sys.exit(1)
-    # Pick the most recently modified
+        raise FileNotFoundError("No local activemembers file found.")
     candidates.sort(key=os.path.getmtime, reverse=True)
     chosen = candidates[0]
     if len(candidates) > 1:
@@ -188,6 +233,203 @@ def find_input_file():
         for f in candidates[1:]:
             log(f"    (ignored) {f}")
     return chosen
+
+
+def _get_drive_service():
+    """Return authenticated Drive service using Application Default Credentials."""
+    if not _DRIVE_LIBS_AVAILABLE:
+        log("ERROR: Google API libraries not installed.")
+        return None
+    try:
+        creds, _ = _google_auth_default(scopes=DRIVE_SCOPES)
+        return _gdrive_build("drive", "v3", credentials=creds)
+    except Exception as e:
+        log(f"ERROR: Could not build Drive service: {e}")
+        return None
+
+
+def download_latest_icf_file_from_drive():
+    """
+    Find the most recent activemembers_*.csv in the Drive Inbound folder
+    and download it to /tmp/. Returns (local_path, drive_file_id).
+    """
+    log("No local activemembers file found — searching Google Drive Inbound folder...")
+    service = _get_drive_service()
+    if service is None:
+        raise FileNotFoundError("Drive service unavailable — cannot download inbound file.")
+
+    query = (
+        f"'{DRIVE_INBOUND_FOLDER_ID}' in parents "
+        f"and name contains 'activemembers' "
+        f"and mimeType != 'application/vnd.google-apps.folder' "
+        f"and trashed = false"
+    )
+    results = service.files().list(
+        q=query,
+        fields="files(id, name, createdTime)",
+        orderBy="createdTime desc",
+        pageSize=5,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
+    ).execute()
+
+    files = results.get("files", [])
+    if not files:
+        raise FileNotFoundError(
+            "No activemembers CSV found in Google Drive Inbound folder.\n"
+            f"Folder ID: {DRIVE_INBOUND_FOLDER_ID}\n"
+            "Run the Make 'Get Active Members' scenario first."
+        )
+
+    latest    = files[0]
+    file_id   = latest["id"]
+    file_name = latest["name"]
+    local_path = f"/tmp/{file_name}"
+
+    log(f"  Found: {file_name} (id: {file_id})")
+    log(f"  Downloading to {local_path}...")
+
+    import io
+    from googleapiclient.http import MediaIoBaseDownload
+    request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
+    with open(local_path, "wb") as fh:
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+
+    log(f"  ✓ Downloaded: {file_name}")
+    return local_path, file_id
+
+
+def move_inbound_file_to_processed(file_id, file_name):
+    """Move the processed CSV from Inbound to Processed folder."""
+    log(f"\nMoving {file_name} to Processed folder...")
+    service = _get_drive_service()
+    if service is None:
+        log("  ⚠  Could not move file — Drive service unavailable.")
+        return
+    try:
+        service.files().update(
+            fileId=file_id,
+            addParents=DRIVE_PROCESSED_FOLDER_ID,
+            removeParents=DRIVE_INBOUND_FOLDER_ID,
+            fields="id, parents",
+            supportsAllDrives=True,
+        ).execute()
+        log("  ✓ Moved to Data-Transfer > Processed.")
+    except Exception as e:
+        log(f"  ⚠  Could not move inbound file: {e}")
+        log(f"  Move manually — File ID: {file_id}")
+
+
+# ─── SendGrid Notifications ───────────────────────────────────────────────────
+
+def _get_sendgrid_api_key():
+    """Fetch SendGrid API key from Secret Manager."""
+    from google.cloud import secretmanager
+    project_id = os.environ.get("GOOGLE_CLOUD_PROJECT", "gg-sync-492000")
+    client = secretmanager.SecretManagerServiceClient()
+    name = f"projects/{project_id}/secrets/sendgrid-api-key/versions/latest"
+    return client.access_secret_version(request={"name": name}).payload.data.decode().strip()
+
+
+def _send_email(subject, body):
+    """Send a plain-text email via SendGrid."""
+    api_key = _get_sendgrid_api_key()
+    payload = {
+        "personalizations": [{"to": [{"email": NOTIFY_TO}]}],
+        "from": {"email": NOTIFY_FROM, "name": "ICF WA GlueUp Sync"},
+        "subject": subject,
+        "content": [{"type": "text/plain", "value": body}],
+    }
+    resp = _requests.post(
+        "https://api.sendgrid.com/v3/mail/send",
+        json=payload,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+
+
+def send_import_ready_notification(folder_link, contact_count, membership_count,
+                                   dropped_count, duplicate_count):
+    """Send 'Import Ready' email after a successful sync run."""
+    log("\nSending import-ready notification email...")
+    date_display = RUN_TS.strftime("%B %d, %Y %I:%M %p")
+    subject = f"GlueUp Import Ready — {date_display}"
+    body = f"""GlueUp Import Ready — {date_display}
+
+The weekly ICF Global → GlueUp member sync has completed successfully.
+
+SUMMARY
+-------
+  Contact rows:      {contact_count}
+  Membership rows:   {membership_count}
+  Dropped members:   {dropped_count}
+  Duplicates found:  {duplicate_count}
+
+ACTION REQUIRED
+---------------
+1. Open the Sync output folder in Google Drive:
+   {folder_link}
+
+2. Download contact_import_*.xlsx and upload it via:
+   GlueUp Admin UI → Contacts → Import
+   Then download membership_import_*.xlsx and upload it via:
+   GlueUp Admin UI → Memberships → Import
+   See the "ICF Global GlueUp Sync Operations" doc for full instructions.
+
+3. Review duplicate_report_*.xlsx and delete RED-flagged duplicate
+   membership records in GlueUp Admin UI.
+
+4. Review comparison_report_*.xlsx for members that were dropped
+   from the ICF Global export and cancel their GlueUp memberships.
+
+—
+Sent automatically by GlobalGlueUpSync v2.0.0 running on Google Cloud Run.
+"""
+    try:
+        _send_email(subject, body)
+        log(f"  ✓ Notification sent to {NOTIFY_TO}.")
+    except Exception as e:
+        log(f"  ⚠  Notification email failed: {e}")
+
+
+def send_no_inbound_file_warning():
+    """Send warning email when no inbound file is found."""
+    log("\nSending no-inbound-file warning email...")
+    date_display = RUN_TS.strftime("%B %d, %Y")
+    subject = f"⚠ GlueUp Sync Warning — No Inbound File ({date_display})"
+    body = f"""GlueUp Sync Warning — No Inbound File Found ({date_display})
+
+The weekly ICF Global → GlueUp member sync ran but found no input file
+in the Google Drive Inbound folder.
+
+This likely means the Make 'Get Active Members' scenario did not run
+as scheduled. Please check:
+
+1. Make scenario status:
+   make.com → Scenarios → ICF Chapter API — Get Active Members
+
+2. Google Drive Inbound folder:
+   Data-Transfer > Inbound
+
+If Make did not run, trigger it manually and then re-run the Cloud Run
+sync job from the GCP console:
+   console.cloud.google.com → Cloud Run → Jobs → glueup-sync → Execute
+
+—
+Sent automatically by GlobalGlueUpSync v2.0.0 running on Google Cloud Run.
+"""
+    try:
+        _send_email(subject, body)
+        log(f"  ✓ Warning sent to {NOTIFY_TO}.")
+    except Exception as e:
+        log(f"  ⚠  Could not send warning email: {e}")
 
 # ─── GlueUp Authentication ────────────────────────────────────────────────────
 
@@ -198,16 +440,43 @@ def make_a_header(method="POST"):
     return f"v=1.0;k={GLUEUP_PK};ts={ts};d={d}"
 
 def glueup_auth():
-    """Read token.json. Return dict of auth headers. Exit on failure."""
-    if not os.path.exists(TOKEN_FILE):
-        log(f"ERROR: {TOKEN_FILE} not found. Run: python3 GetToken.py")
+    """
+    Authenticate to GlueUp using HMAC-SHA256 and return auth headers dict.
+    Generates a fresh session token on every run — no token file required.
+    """
+    log("Authenticating to GlueUp...")
+    ts  = str(int(time.time() * 1000))
+    msg = "POST" + GLUEUP_PK + "1.0" + ts
+    d   = hmac.new(GLUEUP_SK.encode(), msg.encode(), hashlib.sha256).hexdigest()
+    a_header = f"v=1.0;k={GLUEUP_PK};ts={ts};d={d}"
+
+    payload = json.dumps({
+        "email":      {"value": GLUEUP_EMAIL},
+        "passphrase": {"value": GLUEUP_MD5_PW},
+    }).encode()
+    req = Request(
+        f"{GLUEUP_BASE_URL}/v2/user/session",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "a": a_header,
+            "User-Agent": "Mozilla/5.0",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+    except HTTPError as e:
+        log(f"ERROR: GlueUp authentication failed: HTTP {e.code} {e.reason}")
         sys.exit(1)
-    with open(TOKEN_FILE, "r") as f:
-        data = json.load(f)
-    token = data.get("token") or data.get("value", {}).get("token")
+
+    token = data.get("value", {}).get("token")
     if not token:
-        log(f"ERROR: Could not read token from {TOKEN_FILE}. Run: python3 GetToken.py")
+        log(f"ERROR: No token in GlueUp auth response: {json.dumps(data)}")
         sys.exit(1)
+
+    log("  ✓ GlueUp token obtained.")
     return {"token": token, "requestOrganizationId": GLUEUP_ORG_ID}
 
 def glueup_post(endpoint, body_dict, auth_headers):
@@ -1123,78 +1392,6 @@ def process_rows(rows, glueup_by_email, glueup_by_member_id, dry_run=False):
 
 # ─── Google Drive Upload ──────────────────────────────────────────────────────
 
-def _get_drive_service():
-    """
-    Build and return an authenticated Google Drive service object.
-    Uses OAuth 2.0 with credentials.json (Desktop App type).
-    Caches the token in drive_token.json for subsequent runs.
-
-    Returns the service object, or None if auth fails.
-
-    One-time setup:
-      1. Enable the Google Drive API in Google Cloud Console.
-      2. Create OAuth 2.0 credentials (Desktop App type).
-      3. Download as credentials.json into the GG-Integration directory.
-      4. First run opens a browser for consent; subsequent runs use drive_token.json.
-
-    Future migration path (Open Item 15):
-      Replace OAuth with a service account:
-        from google.oauth2 import service_account
-        creds = service_account.Credentials.from_service_account_file(
-            "service_account.json", scopes=DRIVE_SCOPES)
-      Share the Drive folder with the service account email and remove
-      the credentials.json / drive_token.json flow below.
-    """
-    if not _DRIVE_LIBS_AVAILABLE:
-        log("  ERROR: Google Drive libraries not installed.")
-        log("  Run: pip3 install google-api-python-client google-auth-httplib2 google-auth-oauthlib --break-system-packages")
-        return None
-
-    creds = None
-
-    # Load cached token if available
-    if os.path.exists(DRIVE_TOKEN_FILE):
-        try:
-            creds = _GCredentials.from_authorized_user_file(DRIVE_TOKEN_FILE, DRIVE_SCOPES)
-        except Exception as e:
-            log(f"  WARNING: Could not load {DRIVE_TOKEN_FILE}: {e}  — will re-authenticate.")
-
-    # Refresh or obtain new credentials
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(_GRequest())
-            except Exception as e:
-                log(f"  WARNING: Token refresh failed: {e}  — will re-authenticate.")
-                creds = None
-
-        if not creds:
-            if not os.path.exists(DRIVE_CREDENTIALS):
-                log(f"  ERROR: {DRIVE_CREDENTIALS} not found.")
-                log("  See the Design Spec (Google Drive Setup section) for one-time setup instructions.")
-                return None
-            try:
-                flow = _InstalledAppFlow.from_client_secrets_file(DRIVE_CREDENTIALS, DRIVE_SCOPES)
-                creds = flow.run_local_server(port=0)
-            except Exception as e:
-                log(f"  ERROR: OAuth flow failed: {e}")
-                return None
-
-        # Save refreshed / new token for next run
-        try:
-            with open(DRIVE_TOKEN_FILE, "w") as f:
-                f.write(creds.to_json())
-        except Exception as e:
-            log(f"  WARNING: Could not save {DRIVE_TOKEN_FILE}: {e}")
-
-    try:
-        service = _gdrive_build("drive", "v3", credentials=creds)
-        return service
-    except Exception as e:
-        log(f"  ERROR: Failed to build Drive service: {e}")
-        return None
-
-
 def upload_to_drive(file_paths):
     """
     Upload output files to a new dated subfolder in the Sync Output Drive folder.
@@ -1202,19 +1399,15 @@ def upload_to_drive(file_paths):
     Creates:  Sync_YYYYMMDD_HHMM  inside DRIVE_FOLDER_ID
     Uploads:  all files in file_paths into that subfolder
 
-    Logs each file uploaded and the shareable folder link.
-    On any failure: logs the error and continues (output files are always local).
-
-    Args:
-        file_paths: list of local file paths to upload
+    Returns the folder webViewLink on success, or None on failure.
     """
     log("Uploading output files to Google Drive...")
 
     service = _get_drive_service()
     if service is None:
         log("  Drive upload skipped — authentication failed (see above).")
-        log("  Output files are saved locally. Re-run with a working credentials.json to upload.")
-        return
+        log("  Output files are saved locally.")
+        return None
 
     # Create a dated subfolder inside the Sync Output folder
     subfolder_name = f"Sync_{RUN_TS_STR}"
@@ -1236,7 +1429,7 @@ def upload_to_drive(file_paths):
     except Exception as e:
         log(f"  ERROR: Could not create Drive subfolder '{subfolder_name}': {e}")
         log("  Output files are saved locally.")
-        return
+        return None
 
     # Upload each file
     MIME_MAP = {
@@ -1266,6 +1459,7 @@ def upload_to_drive(file_paths):
             log(f"  WARNING: Failed to upload {fname}: {e}")
 
     log(f"  Drive upload complete: {uploaded}/{len(file_paths)} files uploaded to {subfolder_name}.")
+    return folder_link
 
 
 # ─── Entry Point ──────────────────────────────────────────────────────────────
@@ -1289,14 +1483,29 @@ def main():
     log(f"  GlobalGlueUpSync.py  —  {RUN_TS.strftime('%Y-%m-%d %H:%M')}")
     log("=" * 61)
 
-    # Resolve input file
+    # Resolve input file.
+    # Priority: explicit argument > local CWD search > Drive download.
+    drive_file_id   = None   # set when file came from Drive; used for move-to-processed
+    drive_file_name = None
+
     if args.input_csv:
         input_path = args.input_csv
         log(f"  Input:    {input_path} (specified)")
     else:
-        log("  Input:    (auto-discovering most recent activemembers file...)")
-        input_path = find_input_file()
-        log(f"  Input:    {input_path}")
+        try:
+            input_path = find_input_file()
+            log(f"  Input:    {input_path}")
+        except FileNotFoundError:
+            try:
+                input_path, drive_file_id = download_latest_icf_file_from_drive()
+                drive_file_name = os.path.basename(input_path)
+                log(f"  Input:    {input_path} (downloaded from Drive)")
+            except FileNotFoundError as e:
+                log(f"\n⚠  {e}")
+                if not args.no_drive:
+                    send_no_inbound_file_warning()
+                log("\nNothing to process. Exiting.")
+                sys.exit(0)
 
     log(f"  Dry run:  {args.dry_run}")
     log(f"  No Drive: {args.no_drive}")
@@ -1337,6 +1546,15 @@ def main():
     write_comparison_report(comparison_data, comparison_path)
 
     log("Writing duplicate report...")
+    # Count duplicate groups for notification
+    dupes = {}
+    for raw in all_glueup:
+        rec    = _unwrap(raw)
+        props  = rec.get("properties", {}) or {}
+        icf_id = str(props.get("icfmemberid", "") or "").strip()
+        if icf_id:
+            dupes.setdefault(icf_id, []).append(rec)
+    duplicate_count = sum(1 for recs in dupes.values() if len(recs) > 1)
     write_duplicate_report(all_glueup, duplicate_path)
 
     save_log(log_path)
@@ -1344,7 +1562,24 @@ def main():
 
     if not args.no_drive:
         log("")
-        upload_to_drive([contact_path, membership_path, comparison_path, duplicate_path, log_path])
+        folder_link = upload_to_drive(
+            [contact_path, membership_path, comparison_path, duplicate_path, log_path]
+        )
+
+        # Move inbound CSV to Processed (Cloud Run path only)
+        if drive_file_id:
+            move_inbound_file_to_processed(drive_file_id, drive_file_name)
+
+        # Send import-ready notification (Cloud Run path only)
+        if drive_file_id and folder_link:
+            send_import_ready_notification(
+                folder_link     = folder_link,
+                contact_count   = len(contact_rows),
+                membership_count= len(membership_rows),
+                dropped_count   = sum(1 for d in comparison_data
+                                      if d.get("status") == "DROPPED"),
+                duplicate_count = duplicate_count,
+            )
 
     log("")
     log("Done.")

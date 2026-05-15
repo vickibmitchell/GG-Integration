@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy all scripts
 COPY ICFGlueUpSync.py .
+COPY GlobalGlueUpSync.py .
 COPY ExGetRecord.py .
 COPY GetToken.py .
 COPY GetFieldCodes.py .
@@ -29,7 +30,7 @@ COPY ContactAudit.py .
 #   GLUEUP_USE_SECRET_MANAGER=1
 #   GOOGLE_CLOUD_PROJECT=gg-sync-492000
 
-# Default command: run the full sync.
+# Default command: run the full sync using GlobalGlueUpSync.py.
 # Override at invocation time to run a utility script instead, e.g.:
 #   python ExGetRecord.py --email someone@example.com
-CMD ["python", "ICFGlueUpSync.py"]
+CMD ["python", "GlobalGlueUpSync.py"]
