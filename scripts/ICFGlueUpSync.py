@@ -1,9 +1,25 @@
 """
-ICFGlueUpSync.py  —  v1.7.0  (2026-05-15)
+ICFGlueUpSync.py  —  v1.7.2  (2026-05-15)
 ICF Washington State Chapter — GlueUp Member Sync Comparison Tool
 
 CHANGELOG
 ---------
+v1.7.2  2026-05-15
+  - Fixed upload_to_drive() for Shared Drive: added supportsAllDrives=True
+    to both the folder create and file create API calls. Without this flag
+    the Drive API returns 404 on Shared Drive folders even when the service
+    account has Content Manager access. The download path already had this
+    flag; the upload path was missing it.
+
+v1.7.1  2026-05-15
+  - Added download_latest_icf_file_from_drive() — when no local CSV is found
+    and no file path argument is given, the script now searches the Drive
+    Inbound folder (DRIVE_INBOUND_FOLDER_ID) for the most recent
+    activemembers_*.csv, downloads it to /tmp/, and proceeds. This is the
+    normal Cloud Run code path. Local execution is unchanged — if a local
+    CSV exists it is used directly; the Drive download only triggers as a
+    fallback. Added DRIVE_INBOUND_FOLDER_ID constant.
+
 v1.7.0  2026-05-15
   - Cloud Run migration (Open Item 15): replaced OAuth 2.0 browser flow in
     _get_drive_service() with Application Default Credentials (ADC). When
@@ -348,11 +364,12 @@ COUNTRY_CODES = {
 }
 
 
-# Google Drive — Sync Output folder
-DRIVE_SYNC_FOLDER_ID = '1BQ53mlYzkl3N5wz6AiTZm1kDpibempJy'
+# Google Drive folders
+DRIVE_INBOUND_FOLDER_ID  = '1j-jfB8MvP7kaIagDO9A3Dy8RxEkFqXXP'  # Data Transfer > Inbound
+DRIVE_SYNC_FOLDER_ID     = '1BQ53mlYzkl3N5wz6AiTZm1kDpibempJy'   # Data-Transfer > Sync
 # drive scope (not drive.file) is required so the service account can access
 # files in Shared Drives it has been granted Content Manager on.
-DRIVE_SCOPES         = ['https://www.googleapis.com/auth/drive']
+DRIVE_SCOPES             = ['https://www.googleapis.com/auth/drive']
 
 # Fields compared between ICF Global and GlueUp.
 # Each entry: (icf_column_name, glueup_field_path, label_for_report)
@@ -638,6 +655,69 @@ def find_latest_icf_file() -> str:
             'Expected filename pattern: activemembers_YYYYMMDD.csv'
         )
     return max(candidates, key=os.path.getmtime)
+
+
+def download_latest_icf_file_from_drive() -> str:
+    """
+    Find the most recent activemembers_*.csv in the Drive Inbound folder
+    and download it to /tmp/. Returns the local file path.
+
+    Used by Cloud Run where there is no local file — the CSV lives in Drive,
+    placed there by the Make 'Get Active Members' scenario.
+
+    Searches the Inbound folder (DRIVE_INBOUND_FOLDER_ID) for files whose
+    name matches activemembers* and returns the one with the most recent
+    createdTime. Supports Shared Drive (includeItemsFromAllDrives=True).
+    """
+    print('No local CSV found — searching Google Drive Inbound folder...')
+    service = _get_drive_service()
+
+    query = (
+        f"'{DRIVE_INBOUND_FOLDER_ID}' in parents "
+        f"and name contains 'activemembers' "
+        f"and mimeType != 'application/vnd.google-apps.folder' "
+        f"and trashed = false"
+    )
+    results = service.files().list(
+        q=query,
+        fields='files(id, name, createdTime)',
+        orderBy='createdTime desc',
+        pageSize=5,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
+    ).execute()
+
+    files = results.get('files', [])
+    if not files:
+        raise FileNotFoundError(
+            'No activemembers CSV found in Google Drive Inbound folder.\n'
+            f'Folder ID: {DRIVE_INBOUND_FOLDER_ID}\n'
+            'Run the Make "Get Active Members" scenario first to populate the folder.'
+        )
+
+    latest = files[0]
+    file_id   = latest['id']
+    file_name = latest['name']
+    local_path = f'/tmp/{file_name}'
+
+    print(f'  Found: {file_name} (id: {file_id})')
+    print(f'  Downloading to {local_path}...')
+
+    import io
+    from googleapiclient.http import MediaIoBaseDownload
+
+    request = service.files().get_media(
+        fileId=file_id,
+        supportsAllDrives=True,
+    )
+    with open(local_path, 'wb') as fh:
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+
+    print(f'  ✓ Downloaded: {file_name}')
+    return local_path
 
 
 def fmt_date(val) -> str:
@@ -1786,6 +1866,10 @@ def upload_to_drive(file_paths: list[str], timestamp: str) -> str:
     """
     Create a dated subfolder in DRIVE_SYNC_FOLDER_ID and upload all files.
     Returns the subfolder web view URL.
+
+    supportsAllDrives=True is required for all API calls because the target
+    folder lives in a Shared Drive — without it the API returns 404 even
+    when the service account has Content Manager access.
     """
     from googleapiclient.http import MediaFileUpload
 
@@ -1799,7 +1883,9 @@ def upload_to_drive(file_paths: list[str], timestamp: str) -> str:
         'parents':  [DRIVE_SYNC_FOLDER_ID],
     }
     folder = service.files().create(
-        body=folder_meta, fields='id, webViewLink'
+        body=folder_meta,
+        fields='id, webViewLink',
+        supportsAllDrives=True,
     ).execute()
     folder_id  = folder['id']
     folder_url = folder.get('webViewLink',
@@ -1813,6 +1899,7 @@ def upload_to_drive(file_paths: list[str], timestamp: str) -> str:
             body={'name': fname, 'parents': [folder_id]},
             media_body=media,
             fields='id',
+            supportsAllDrives=True,
         ).execute()
         print(f'  ✓ Uploaded: {fname}')
 
@@ -1855,11 +1942,18 @@ def main():
     )
     args = parser.parse_args()
 
-    # Determine ICF file path
+    # Determine ICF file path.
+    # Priority: explicit argument > local CWD search > Drive download.
+    # The Drive fallback is used by Cloud Run where the CSV lives in the
+    # Drive Inbound folder (placed there by the Make scenario) rather than
+    # on the local filesystem.
     if args.icf_file:
         icf_path = args.icf_file
     else:
-        icf_path = find_latest_icf_file()
+        try:
+            icf_path = find_latest_icf_file()
+        except FileNotFoundError:
+            icf_path = download_latest_icf_file_from_drive()
 
     if not Path(icf_path).exists():
         print(f'ERROR: File not found: {icf_path}')
