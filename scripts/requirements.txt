@@ -1,0 +1,15 @@
+# ICFGlueUpSync — Python dependencies
+# Used by: ICFGlueUpSync.py and all utility scripts
+# Last updated: 2026-05-15
+
+# Core sync script
+requests==2.32.3
+openpyxl==3.1.5
+
+# Google Drive upload (Application Default Credentials)
+google-api-python-client==2.154.0
+google-auth==2.38.0
+google-auth-httplib2==0.2.0
+
+# GCP Secret Manager (Cloud Run only — no-op locally)
+google-cloud-secret-manager==2.22.0
