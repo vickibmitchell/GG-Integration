@@ -124,11 +124,11 @@ Before Drive upload will work, `credentials.json` must be present in the working
 
 ## Phase 1 Workflow
 
-The ICF Global data pull is handled automatically by a scheduled Make.com scenario (currently weekly). When the scenario runs, it pulls the active member list from the ICF Global SOAP API and writes it to a dated CSV in the shared Google Drive Inbound folder, then sends a notification email to trigger the admin steps below.
+The ICF Global data pull is handled automatically by a scheduled Make.com scenario (currently weekly). When the scenario runs, it pulls the active member list from the ICF Global SOAP API and writes it to a dated CSV in the shared Google Drive Inbound folder, then sends a notification email to trigger the admin steps below. Alternatively, the GlobalGlueUpSync script can be run by running the gcloud scheduler for glueup-sync-weekly. That job may be scheduled to run after the Make scenario, if desired. The steps below are if a manual run is needed, on a local machine. 
 
 | Step | Who | Action |
 |---|---|---|
-| 1 | Make | Get Active Members scenario runs on schedule and produces `activemembers_YYYYMMDD.csv` in Data-Transfer > Inbound. Sends notification email to technology@icfwashingtonstate.org. |
+| 1 | Make | Get Active Members scenario runs on schedule and produces `activemembers_YYYYMMDD.csv` in Data-Transfer > Inbound. Sends notification email to glueupnotifiers@. |
 | 2 | Admin | Confirm `glueup_token.json` is present and valid. If expired: `python3 GetToken.py`. |
 | 3 | Admin | Run `python3 scripts/GlobalGlueUpSync.py` (auto-discovers most recent activemembers file), or `python3 scripts/GlobalGlueUpSync.py <filename.csv>`. Add `--no-drive` to skip Drive upload. |
 | 4 | Admin | Review console summary. Check VALIDATION ERROR lines. Verify NEW / CHANGED / SAME counts are plausible. Review `comparison_report` for any unexpected CHANGED records. |
