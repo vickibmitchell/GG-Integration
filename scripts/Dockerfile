@@ -3,6 +3,10 @@
 # Authentication via Application Default Credentials (service account
 # assigned to the Cloud Run job — no key file required).
 
+# Build command (required for Apple Silicon Macs):
+# docker build --platform linux/amd64 -t gcr.io/gg-sync-492000/glueup-sync .
+# docker push gcr.io/gg-sync-492000/glueup-sync
+
 FROM python:3.11-slim
 
 # Set working directory
@@ -21,6 +25,7 @@ COPY GetFieldCodes.py .
 COPY GetMultiMembers.py .
 COPY DeleteMultiMembers.py .
 COPY ContactAudit.py .
+COPY ZipCodes_Areas_CCC.xlsx .
 
 # Output files are written to /app — Cloud Run jobs are ephemeral, so
 # output files are uploaded to Google Drive before the container exits.
