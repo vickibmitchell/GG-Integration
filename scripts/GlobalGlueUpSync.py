@@ -2,10 +2,14 @@
 """
 GlobalGlueUpSync.py
 ICF Washington State Chapter — GlueUp Member Sync
-Version: 2.1.1
+Version: 2.1.2
 
 CHANGELOG
 ---------
+v2.1.2  2026-06-15
+  - Added SCRIPT_VERSION constant. Notification email footer now references
+    the actual running version dynamically instead of hardcoded "v2.0.0".
+
 v2.1.1  2026-06-09
   - build_membership_row: "Membership End Date" now set to 10 years from
     run date (matching GlueUp's new 10-year membership term configuration)
@@ -99,6 +103,8 @@ except ImportError:
     pass  # reported at upload time if Drive upload is attempted
 
 # ─── Configuration ────────────────────────────────────────────────────────────
+
+SCRIPT_VERSION            = "2.1.2"
 
 GLUEUP_BASE_URL           = "https://api-services.glueup.com"
 GLUEUP_ORG_ID             = "7912"
@@ -422,7 +428,7 @@ ACTION REQUIRED
 See the "ICF Global GlueUp Sync Operations" doc for full instructions.
 
 —
-Sent automatically by GlobalGlueUpSync v2.0.0 running on Google Cloud Run.
+Sent automatically by GlobalGlueUpSync v{SCRIPT_VERSION} running on Google Cloud Run.
 """
     try:
         _send_email(subject, body)
@@ -455,7 +461,7 @@ sync job from the GCP console:
    console.cloud.google.com → Cloud Run → Jobs → glueup-sync → Execute
 
 —
-Sent automatically by GlobalGlueUpSync v2.0.0 running on Google Cloud Run.
+Sent automatically by GlobalGlueUpSync v{SCRIPT_VERSION} running on Google Cloud Run.
 """
     try:
         _send_email(subject, body)
