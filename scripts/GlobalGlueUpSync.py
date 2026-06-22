@@ -2,10 +2,28 @@
 """
 GlobalGlueUpSync.py
 ICF Washington State Chapter — GlueUp Member Sync
-Version: 2.1.2
+Version: 2.2.0
 
 CHANGELOG
 ---------
+v2.2.0  2026-06-22
+  - GlueUp Contact Settings confirmed all ICF Global * custom fields,
+    including "ICF Global Membership End Date", are Contact-scoped (GlueUp
+    has no custom fields on the Membership object). Verified via live test
+    import (Tommy Price, member 9066454) with no duplication and a correct
+    field update.
+  - RENEWAL status no longer generates a separate renewals_*.xlsx worklist
+    or requires manual GlueUp Admin UI date edits. build_contact_row() now
+    accepts is_renewal and populates "ICF Global Membership End Date"
+    directly when True. Start Date / Restart Date / Type remain blank on
+    renewal by design, to preserve legacy values in those fields.
+  - process_rows() RENEWAL branch: contact import only (no membership
+    import, no renewal_rows list). RENEWAL remains a distinct status in
+    the comparison report and run log for visibility/audit trail.
+  - Removed renewals_*.xlsx from output files, Drive upload list, and the
+    import-ready notification email. Email step numbering and wording
+    updated accordingly.
+
 v2.1.2  2026-06-15
   - Added SCRIPT_VERSION constant. Notification email footer now references
     the actual running version dynamically instead of hardcoded "v2.0.0".
@@ -104,7 +122,7 @@ except ImportError:
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-SCRIPT_VERSION            = "2.1.2"
+SCRIPT_VERSION            = "2.2.0"
 
 GLUEUP_BASE_URL           = "https://api-services.glueup.com"
 GLUEUP_ORG_ID             = "7912"
@@ -388,7 +406,7 @@ def _send_email(subject, body):
 
 
 def send_import_ready_notification(folder_link, contact_count, membership_count,
-                                   renewal_count, dropped_count, duplicate_count):
+                                   dropped_count, duplicate_count):
     """Send 'Import Ready' email after a successful sync run."""
     log("\nSending import-ready notification email...")
     date_display = RUN_TS.strftime("%B %d, %Y %I:%M %p")
@@ -400,7 +418,6 @@ The weekly ICF Global → GlueUp member sync has completed successfully.
 SUMMARY
 -------
   New members:       {contact_count} contact rows / {membership_count} membership rows
-  Renewals:          {renewal_count} (manual update required)
   Dropped members:   {dropped_count} (manual cancellation required)
   Duplicates found:  {duplicate_count}
 
@@ -411,18 +428,17 @@ ACTION REQUIRED
 
 2. Upload contact_import_*.xlsx via:
    GlueUp Admin UI → Contacts → Import
+   (Covers new members' contact fields, renewals' updated End Date,
+   and other changed fields — all in one import.)
 
 3. Upload membership_import_*.xlsx via:
    GlueUp Admin UI → Memberships → Import
    (New members only — do NOT use for renewals)
 
-4. Review renewals_*.xlsx and manually update the expiration date
-   for each member in GlueUp Admin UI → find contact → Membership tab.
-
-5. Review dropped_members_*.xlsx and cancel the GlueUp membership
+4. Review dropped_members_*.xlsx and cancel the GlueUp membership
    for each listed member via GlueUp Admin UI.
 
-6. Review duplicate_report_*.xlsx and cancel RED-flagged duplicate
+5. Review duplicate_report_*.xlsx and cancel RED-flagged duplicate
    membership records in GlueUp Admin UI.
 
 See the "ICF Global GlueUp Sync Operations" doc for full instructions.
@@ -906,11 +922,21 @@ def extract_glueup_import_date(rec):
 
 # ─── Row Builders ─────────────────────────────────────────────────────────────
 
-def build_contact_row(row, glueup_rec, effective_email, has_real_email):
+def build_contact_row(row, glueup_rec, effective_email, has_real_email, is_renewal=False):
     """
     Build one row dict for the Contact import XLSX.
     All 33 columns from sample_contact_import.xlsx must be present.
     Blue (ignored) fields are left blank. Active fields are populated.
+
+    is_renewal: when True, "ICF Global Membership End Date" is populated with
+    the new ICF Global expiry date. GlueUp confirmed (Contact Settings ->
+    Field Settings, 2026-06-22) that all ICF Global * fields, including this
+    one, are Contact-scoped custom fields -- GlueUp has no custom fields on
+    the Membership object. Contact import safely updates existing contacts
+    (no duplication risk), so renewal dates no longer require a separate
+    manual GlueUp Admin UI edit. Start Date / Restart Date / Type are left
+    blank here intentionally -- only End Date is updated on renewal, per
+    decision to preserve legacy values in those three fields.
     """
     shadow = not has_real_email
     if glueup_rec and not shadow:
@@ -952,7 +978,7 @@ def build_contact_row(row, glueup_rec, effective_email, has_real_email):
         "ICF Global Import Date":                   RUN_DATE_MMDDYYYY,
         "Local Region":                             get_local_region(row.get(COL_CITY, ""), row.get(COL_ZIP, "")),
         "ICF Global Member Type":                   row.get(COL_MEMBER_TYPE, "").strip(),
-        "ICF Global Membership End Date":           "",          # blue — ignored (belongs to membership)
+        "ICF Global Membership End Date":           row.get(COL_EXPIRY, "").strip() if is_renewal else "",  # populated on renewal only (Contact-scoped field, confirmed 2026-06-22)
         "ICF Global Membership Restart Date":       "",          # blue — ignored (belongs to membership)
         "ICF Global Membership Start Date":         "",          # blue — ignored (belongs to membership)
         "ICF Global Membership Type":               "",          # blue — ignored (belongs to membership)
@@ -1224,7 +1250,7 @@ def write_comparison_report(comparison_data, path):
     }
     status_notes = {
         "NEW":     "Add via contact_import + membership_import",
-        "RENEWAL": "Update expiry manually in GlueUp; contact_import updates other fields",
+        "RENEWAL": "Update via contact_import (End Date auto-populated)",
         "CHANGED": "Update via contact_import only",
         "SAME":    "No action required",
         "SKIPPED": "Shadow email, no date data — no action",
@@ -1362,13 +1388,15 @@ def write_duplicate_report(all_glueup_members, path):
 def process_rows(rows, glueup_by_email, glueup_by_member_id, dry_run=False):
     """
     Main per-record loop. Returns:
-      contact_rows, membership_rows, renewal_rows, dropped_rows, comparison_data
+      contact_rows, membership_rows, dropped_rows, comparison_data
 
     Sync logic:
       NEW     — member in ICF Global, not in GlueUp
                 -> contact import + membership import
       RENEWAL — member in both; expiration date has advanced
-                -> contact import + renewal report (NO membership import — manual)
+                -> contact import only, with "ICF Global Membership End Date"
+                   populated with the new expiry date (Contact-scoped field;
+                   no separate manual GlueUp UI edit needed as of 2026-06-22)
       CHANGED — member in both; other fields differ (no expiry advance)
                 -> contact import only
       SAME    — no differences -> no output
@@ -1378,7 +1406,6 @@ def process_rows(rows, glueup_by_email, glueup_by_member_id, dry_run=False):
     """
     contact_rows    = []
     membership_rows = []
-    renewal_rows    = []
     comparison_data = []
     counts = {"total": 0, "skipped": 0, "new": 0, "renewals": 0,
               "changed_other": 0, "same": 0,
@@ -1482,12 +1509,12 @@ def process_rows(rows, glueup_by_email, glueup_by_member_id, dry_run=False):
             )
 
         elif status == "RENEWAL":
-            # Contact import + renewal report; NO membership import
+            # Contact import only — End Date populated directly (Contact-scoped
+            # field, confirmed 2026-06-22). No membership import, no separate
+            # manual worklist required.
             contact_rows.append(
-                build_contact_row(row, glueup_rec, effective_email, has_real_email)
-            )
-            renewal_rows.append(
-                build_membership_row(row, glueup_rec, effective_email, has_real_email)
+                build_contact_row(row, glueup_rec, effective_email, has_real_email,
+                                   is_renewal=True)
             )
 
         elif status == "CHANGED":
@@ -1532,16 +1559,15 @@ def process_rows(rows, glueup_by_email, glueup_by_member_id, dry_run=False):
     log(f"  Total rows read:           {counts['total']}")
     log(f"  Skipped (no data):         {counts['skipped']}")
     log(f"  New members:               {counts['new']}")
-    log(f"  Renewals (manual):         {counts['renewals']}")
+    log(f"  Renewals (auto via contact import): {counts['renewals']}")
     log(f"  Changed (other fields):    {counts['changed_other']}")
     log(f"  Same (no change):          {counts['same']}")
     log(f"  Dropped from ICF Global:   {len(dropped_rows)}")
     log(f"  Contact rows to import:    {len(contact_rows)}")
     log(f"  Membership rows to import: {len(membership_rows)}")
-    log(f"  Renewal rows (manual):     {len(renewal_rows)}")
     log("─────────────────────────────────────────────────────────────")
 
-    return contact_rows, membership_rows, renewal_rows, dropped_rows, comparison_data
+    return contact_rows, membership_rows, dropped_rows, comparison_data
 
 # ─── Google Drive Upload ──────────────────────────────────────────────────────
 
@@ -1678,7 +1704,7 @@ def main():
     glueup_by_email, glueup_by_member_id = build_glueup_index(all_glueup)
 
     log("Processing members...")
-    contact_rows, membership_rows, renewal_rows, dropped_rows, comparison_data = process_rows(
+    contact_rows, membership_rows, dropped_rows, comparison_data = process_rows(
         rows, glueup_by_email, glueup_by_member_id, dry_run=args.dry_run
     )
 
@@ -1688,7 +1714,6 @@ def main():
 
     contact_path    = f"contact_import_{RUN_TS_STR}.xlsx"
     membership_path = f"membership_import_{RUN_TS_STR}.xlsx"
-    renewal_path    = f"renewals_{RUN_TS_STR}.xlsx"
     dropped_path    = f"dropped_members_{RUN_TS_STR}.xlsx"
     comparison_path = f"comparison_report_{RUN_TS_STR}.xlsx"
     duplicate_path  = f"duplicate_report_{RUN_TS_STR}.xlsx"
@@ -1698,7 +1723,6 @@ def main():
     log("Writing output files...")
     write_import_xlsx(contact_rows,    contact_path,    CONTACT_FIELDNAMES)
     write_import_xlsx(membership_rows, membership_path, MEMBERSHIP_FIELDNAMES)
-    write_import_xlsx(renewal_rows,    renewal_path,    MEMBERSHIP_FIELDNAMES)
     write_dropped_members_report(dropped_rows, dropped_path)
     write_comparison_report(comparison_data, comparison_path)
 
@@ -1720,7 +1744,7 @@ def main():
     if not args.no_drive:
         log("")
         folder_link = upload_to_drive(
-            [contact_path, membership_path, renewal_path, dropped_path,
+            [contact_path, membership_path, dropped_path,
              comparison_path, duplicate_path, log_path]
         )
 
@@ -1734,7 +1758,6 @@ def main():
                 folder_link      = folder_link,
                 contact_count    = len(contact_rows),
                 membership_count = len(membership_rows),
-                renewal_count    = len(renewal_rows),
                 dropped_count    = len(dropped_rows),
                 duplicate_count  = duplicate_count,
             )
