@@ -2,10 +2,40 @@
 """
 GlobalGlueUpSync.py
 ICF Washington State Chapter — GlueUp Member Sync
-Version: 2.2.0
+Version: 2.3.0
 
 CHANGELOG
 ---------
+v2.3.0  2026-08-22
+  - New Contact-scoped custom field "ICF Global Email" (internal name
+    icfglobalemail) added to CONTACT_FIELDNAMES and always populated in
+    build_contact_row() with the current ICF Global email for every
+    processed row. This field always mirrors ICF Global's email, whatever
+    it is this run.
+  - Root-cause fix for duplicate Contact creation: GlueUp's Contacts Import
+    matches/dedupes incoming rows by the "Email" column. Previously the
+    script sent ICF Global's email into "Email" for every row, so any
+    member whose ICF Global email differed from what GlueUp had on file
+    would fail to match the existing Contact and create a new orphan
+    Contact (no Membership attached) instead of updating the real one.
+    build_contact_row() now only sends effective_email into "Email" when
+    the contact is genuinely NEW (glueup_rec is None); for an existing/
+    matched contact it resends GlueUp's own on-file email (via
+    extract_glueup_field(glueup_rec, "emailAddress")) so the identifying
+    "Email" field is never changed by the sync, while "ICF Global Email"
+    still tracks any change on the ICF Global side. GlueUp's primary
+    Email/identifier is otherwise only ever set once, at true NEW-member
+    creation.
+  - Dropped member detection now also appends a minimal Contact-import row
+    (First Name, Last Name, existing GlueUp Email, ICF Global Member ID,
+    "ICF Global Member Status" = "Expired", all else blank) to
+    contact_rows for every dropped member, so contact_import_*.xlsx sets
+    the Contact's status to Expired at the same time dropped_members_*.xlsx
+    flags the Membership for manual cancellation in GlueUp Admin UI. This
+    previously only happened once some other field changed and triggered a
+    later CHANGED/RENEWAL row for that contact -- Status was never
+    explicitly set to Expired at drop time.
+
 v2.2.0  2026-06-22
   - GlueUp Contact Settings confirmed all ICF Global * custom fields,
     including "ICF Global Membership End Date", are Contact-scoped (GlueUp
@@ -122,7 +152,7 @@ except ImportError:
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-SCRIPT_VERSION            = "2.2.0"
+SCRIPT_VERSION            = "2.3.0"
 
 GLUEUP_BASE_URL           = "https://api-services.glueup.com"
 GLUEUP_ORG_ID             = "7912"
@@ -925,7 +955,8 @@ def extract_glueup_import_date(rec):
 def build_contact_row(row, glueup_rec, effective_email, has_real_email, is_renewal=False):
     """
     Build one row dict for the Contact import XLSX.
-    All 33 columns from sample_contact_import.xlsx must be present.
+    All 34 columns in CONTACT_FIELDNAMES must be present (the 33 columns
+    from sample_contact_import.xlsx, plus "ICF Global Email" added 2026-08-22).
     Blue (ignored) fields are left blank. Active fields are populated.
 
     is_renewal: when True, "ICF Global Membership End Date" is populated with
@@ -937,6 +968,19 @@ def build_contact_row(row, glueup_rec, effective_email, has_real_email, is_renew
     manual GlueUp Admin UI edit. Start Date / Restart Date / Type are left
     blank here intentionally -- only End Date is updated on renewal, per
     decision to preserve legacy values in those three fields.
+
+    Email / ICF Global Email (added 2026-08-22): GlueUp's Contacts Import
+    matches/dedupes incoming rows by the "Email" column -- NOT by "ICF
+    Global Member ID". Sending ICF Global's email for an already-matched
+    contact whose ICF Global email had changed was silently creating a new
+    duplicate/orphan Contact instead of updating the real one. To prevent
+    this, "Email" (GlueUp's real identifier field) is only ever set from
+    ICF Global data at true NEW-member creation (glueup_rec is None); for
+    an existing/matched contact, GlueUp's own on-file email is resent
+    unchanged, so the sync can never itself cause a duplicate. The new
+    "ICF Global Email" custom field always mirrors ICF Global's current
+    email regardless, so staff can see when it differs from GlueUp's
+    on-file "Email" and decide whether to update the latter manually.
     """
     shadow = not has_real_email
     if glueup_rec and not shadow:
@@ -948,6 +992,13 @@ def build_contact_row(row, glueup_rec, effective_email, has_real_email, is_renew
     credential = transform_credential(row.get(COL_CREDENTIAL, ""))
     tc_cred    = transform_credential(row.get(COL_TC_CRED, ""))
 
+    # "Email" is GlueUp's matching/identifier field -- never resend ICF
+    # Global's email for an already-existing contact (see docstring above).
+    if glueup_rec is not None:
+        contact_email = extract_glueup_field(glueup_rec, "emailAddress") or effective_email
+    else:
+        contact_email = effective_email
+
     return {
         "First Name":                               first,
         "Last Name":                                last,
@@ -955,7 +1006,8 @@ def build_contact_row(row, glueup_rec, effective_email, has_real_email, is_renew
         "City":                                     row.get(COL_CITY, "").strip(),
         "State/Province":                           expand_state(row.get(COL_STATE, "")),
         "Postal Code/Zip Code":                     row.get(COL_ZIP, "").strip(),
-        "Email":                                    effective_email,
+        "Email":                                    contact_email,
+        "ICF Global Email":                         effective_email,
         "Phone":                                    row.get(COL_PHONE, "").strip(),
         "Company":                                  "",          # blue — ignored
         "Title/Position":                           "",          # blue — ignored
@@ -984,14 +1036,17 @@ def build_contact_row(row, glueup_rec, effective_email, has_real_email, is_renew
         "ICF Global Membership Type":               "",          # blue — ignored (belongs to membership)
     }
 
-# Exact column order from sample_contact_import.xlsx (33 columns — all must be present)
+# Exact column order from sample_contact_import.xlsx, plus "ICF Global Email"
+# (added 2026-08-22, custom field internal name icfglobalemail) — 34 columns
+# — all must be present.
 CONTACT_FIELDNAMES = [
     "First Name", "Last Name", "Address", "City", "State/Province",
-    "Postal Code/Zip Code", "Email", "Phone", "Company", "Title/Position",
-    "Volunteer Role", "Findable", "Directory Listing Text", "Coach Industry",
-    "Coaching Specialization", "Has Email", "ICF Chapter Start Date",
-    "ICF Credential", "ICF Credential Award Date", "ICF Credential Expire Date",
-    "ICF Global Auto Renewal", "ICF Global Member ID", "ICF Global Member Status",
+    "Postal Code/Zip Code", "Email", "ICF Global Email", "Phone", "Company",
+    "Title/Position", "Volunteer Role", "Findable", "Directory Listing Text",
+    "Coach Industry", "Coaching Specialization", "Has Email",
+    "ICF Chapter Start Date", "ICF Credential", "ICF Credential Award Date",
+    "ICF Credential Expire Date", "ICF Global Auto Renewal",
+    "ICF Global Member ID", "ICF Global Member Status",
     "ICF Team Coaching Credential", "ICF Team Coaching Credential Award Date",
     "ICF Team Coaching Credential Expire Date", "ICF Global Import Date",
     "Local Region", "ICF Global Member Type", "ICF Global Membership End Date",
@@ -1525,6 +1580,13 @@ def process_rows(rows, glueup_by_email, glueup_by_member_id, dry_run=False):
 
     # ── Dropped member detection ──────────────────────────────────────────────
     # Any GlueUp record with an ICF Member ID not seen in this run is dropped.
+    # In addition to the dropped_members_*.xlsx manual-cancellation worklist
+    # below, also queue a minimal Contact-import row so "ICF Global Member
+    # Status" is set to "Expired" on the Contact record at drop time, via the
+    # same contact_import_*.xlsx -> Contacts -> Import mechanism used
+    # everywhere else (added 2026-08-22 -- previously this only happened
+    # incidentally, if some other field later changed and triggered a
+    # CHANGED/RENEWAL row for that contact).
     dropped_rows = []
     for rec in glueup_by_member_id.values():
         props  = rec.get("properties", {}) or {}
@@ -1553,6 +1615,16 @@ def process_rows(rows, glueup_by_email, glueup_by_member_id, dry_run=False):
                 "Membership End Date": exp_prop,
                 "Action":              "Cancel membership in GlueUp Admin UI",
             })
+            # Minimal Contact-import row: only set Name/Email (unchanged,
+            # for matching)/ICF Global Member ID/Status -- everything else
+            # left blank so nothing else on the Contact is touched.
+            contact_row = {field: "" for field in CONTACT_FIELDNAMES}
+            contact_row["First Name"]                 = first
+            contact_row["Last Name"]                  = last
+            contact_row["Email"]                      = email
+            contact_row["ICF Global Member ID"]       = icf_id
+            contact_row["ICF Global Member Status"]   = "Expired"
+            contact_rows.append(contact_row)
 
     log("")
     log("── Run Summary ──────────────────────────────────────────────")
