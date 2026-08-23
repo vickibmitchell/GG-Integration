@@ -2,10 +2,38 @@
 """
 GlobalGlueUpSync.py
 ICF Washington State Chapter — GlueUp Member Sync
-Version: 2.3.0
+Version: 2.3.1
 
 CHANGELOG
 ---------
+v2.3.1  2026-08-23
+  - All Contact-scoped "ICF Global *" date fields are now written as ISO
+    (YYYY-MM-DD) instead of MM/DD/YYYY, via a new to_iso_date() helper used
+    in build_contact_row() and build_membership_row(). Root cause: live
+    testing in the GlueUp Admin UI on 2026-08-23 showed the "is less
+    than" / "is more than" / "is equal to" filters on these Date-type
+    custom fields only work reliably against YYYY-MM-DD-stored values --
+    MM/DD/YYYY-stored values (this script's own format through v2.3.0,
+    inherited unchanged from ICF Global's MM/DD/YYYY source CSV) were
+    silently excluded from "greater than"/"equal to" filter results and
+    over-matched by "less than" almost regardless of true date. Confirmed
+    with a specific contact (Import Date 08/17/2026, well past a
+    06/22/2026 "greater than" cutoff) that was missing from that filter's
+    results, while records already stored as ISO matched correctly. This
+    only changes what format the script WRITES; it does not touch the
+    is_renewal/CHANGED detection logic, which already normalizes GlueUp's
+    read-back values (mixed MM/DD/YYYY or YYYY-MM-DD) via
+    _extract_prop_value() regardless of stored format. NOTE: this does not
+    apply to build_membership_row()'s native "Membership Start Date" /
+    "Membership End Date" fields (the Membership object's own built-in
+    date fields, not Contact-scoped custom fields) -- those are left as
+    MM/DD/YYYY, unchanged, since they were not part of the diagnosed
+    filter-matching problem.
+  - One-time backfill delivered separately (backfill_date_formats_20260823.xlsx)
+    to reformat all 9 ICF Global * date fields to ISO on every existing
+    Contact that had any of them populated (1,162 contacts), so legacy
+    values written before this change also become filter-usable.
+
 v2.3.0  2026-08-22
   - New Contact-scoped custom field "ICF Global Email" (internal name
     icfglobalemail) added to CONTACT_FIELDNAMES and always populated in
@@ -152,7 +180,7 @@ except ImportError:
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-SCRIPT_VERSION            = "2.3.0"
+SCRIPT_VERSION            = "2.3.1"
 
 GLUEUP_BASE_URL           = "https://api-services.glueup.com"
 GLUEUP_ORG_ID             = "7912"
@@ -176,6 +204,7 @@ NOTIFY_TO   = "GlueUpNotifiers@icfwashingtonstate.org"
 
 RUN_TS            = datetime.datetime.now()
 RUN_DATE_MMDDYYYY = RUN_TS.strftime("%m/%d/%Y")
+RUN_DATE_ISO      = RUN_TS.strftime("%Y-%m-%d")
 RUN_TS_STR        = RUN_TS.strftime("%Y%m%d_%H%M")
 
 # ─── Input CSV column names (as output by the Make scenario) ──────────────────
@@ -950,6 +979,38 @@ def extract_glueup_import_date(rec):
     """Extract icfimportdate from GlueUp record, for duplicate detection."""
     return extract_glueup_field(rec, "icfimportdate")
 
+def to_iso_date(s):
+    """
+    Convert a date string to ISO YYYY-MM-DD for writing into any Contact-scoped
+    "ICF Global *" custom date field via Contacts/Membership Import.
+
+    Added 2026-08-23: live filter testing in the GlueUp Admin UI confirmed
+    these Date-type custom fields only reliably support "is less than" /
+    "is more than" / "is equal to" filtering when the stored value is
+    YYYY-MM-DD. Values previously written as MM/DD/YYYY (the format this
+    script used through v2.2.0, matching ICF Global's own source CSV) were
+    silently excluded from "greater than"/"equal to" filters and
+    over-matched by "less than" -- e.g. a contact whose Import Date was
+    unambiguously > a cutoff date did not appear in a "greater than" filter
+    result, while nearly every contact appeared in a "less than" result
+    regardless of true date. Every ICF Global * date field is now written
+    as ISO to keep GlueUp's own filters usable. Blank input returns blank
+    unchanged. Already-ISO input passes through unchanged. Anything that
+    doesn't match either recognized shape is logged and returned unchanged
+    rather than raising, so one malformed source value can't fail the run.
+    """
+    s = (s or "").strip()
+    if not s:
+        return s
+    if _re.match(r'^\d{4}-\d{2}-\d{2}$', s):
+        return s
+    m = _re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})$', s)
+    if m:
+        mm, dd, yyyy = m.groups()
+        return f"{yyyy}-{int(mm):02d}-{int(dd):02d}"
+    log(f"  WARNING: to_iso_date() could not parse '{s}' — left unchanged.")
+    return s
+
 # ─── Row Builders ─────────────────────────────────────────────────────────────
 
 def build_contact_row(row, glueup_rec, effective_email, has_real_email, is_renewal=False):
@@ -1017,20 +1078,20 @@ def build_contact_row(row, glueup_rec, effective_email, has_real_email, is_renew
         "Coach Industry":                           "",          # blue — ignored
         "Coaching Specialization":                  "",          # blue — ignored
         "Has Email":                                "yes" if has_real_email else "no",
-        "ICF Chapter Start Date":                   row.get(COL_CHAPTER_START, "").strip(),
+        "ICF Chapter Start Date":                   to_iso_date(row.get(COL_CHAPTER_START, "").strip()),
         "ICF Credential":                           credential,
-        "ICF Credential Award Date":                row.get(COL_CRED_AWARD, "").strip() if credential else "",
-        "ICF Credential Expire Date":               row.get(COL_CRED_EXPIRE, "").strip() if credential else "",
+        "ICF Credential Award Date":                to_iso_date(row.get(COL_CRED_AWARD, "").strip()) if credential else "",
+        "ICF Credential Expire Date":                to_iso_date(row.get(COL_CRED_EXPIRE, "").strip()) if credential else "",
         "ICF Global Auto Renewal":                  "",          # blue — ignored (belongs to membership)
         "ICF Global Member ID":                     row.get(COL_MEMBER_ID, "").strip(),
         "ICF Global Member Status":                 row.get(COL_STATUS, "").strip(),
         "ICF Team Coaching Credential":             tc_cred,
-        "ICF Team Coaching Credential Award Date":  row.get(COL_TC_AWARD, "").strip() if tc_cred else "",
-        "ICF Team Coaching Credential Expire Date": row.get(COL_TC_EXPIRE, "").strip() if tc_cred else "",
-        "ICF Global Import Date":                   RUN_DATE_MMDDYYYY,
+        "ICF Team Coaching Credential Award Date":  to_iso_date(row.get(COL_TC_AWARD, "").strip()) if tc_cred else "",
+        "ICF Team Coaching Credential Expire Date": to_iso_date(row.get(COL_TC_EXPIRE, "").strip()) if tc_cred else "",
+        "ICF Global Import Date":                   RUN_DATE_ISO,
         "Local Region":                             get_local_region(row.get(COL_CITY, ""), row.get(COL_ZIP, "")),
         "ICF Global Member Type":                   row.get(COL_MEMBER_TYPE, "").strip(),
-        "ICF Global Membership End Date":           row.get(COL_EXPIRY, "").strip() if is_renewal else "",  # populated on renewal only (Contact-scoped field, confirmed 2026-06-22)
+        "ICF Global Membership End Date":           to_iso_date(row.get(COL_EXPIRY, "").strip()) if is_renewal else "",  # populated on renewal only (Contact-scoped field, confirmed 2026-06-22); written as ISO (confirmed 2026-08-23, see to_iso_date())
         "ICF Global Membership Restart Date":       "",          # blue — ignored (belongs to membership)
         "ICF Global Membership Start Date":         "",          # blue — ignored (belongs to membership)
         "ICF Global Membership Type":               "",          # blue — ignored (belongs to membership)
@@ -1094,15 +1155,15 @@ def build_membership_row(row, glueup_rec, effective_email, has_real_email):
         "ICF Credential Expire Date":                   "",          # blue — ignored (in contact import)
         "ICF Global Auto Renewal":                      transform_auto_renewal(row.get(COL_AUTO_RENEWAL, "")),
         "ICF Global Member ID":                         row.get(COL_MEMBER_ID, "").strip(),
-        "ICF Global Membership End Date":               row.get(COL_EXPIRY, "").strip(),
-        "ICF Global Membership Start Date":             row.get(COL_JOIN_DATE, "").strip(),
+        "ICF Global Membership End Date":               to_iso_date(row.get(COL_EXPIRY, "").strip()),
+        "ICF Global Membership Start Date":             to_iso_date(row.get(COL_JOIN_DATE, "").strip()),
         "ICF Global Membership Type":                   "individual",
         "ICF Team Coaching Credential":                 "",          # blue — ignored (in contact import)
         "ICF Team Coaching Credential Award Date":      "",          # blue — ignored (in contact import)
         "ICF Team Coaching Credential Expire Date":     "",          # blue — ignored (in contact import)
         "Has Email":                                    "",          # blue — ignored (in contact import)
-        "ICF Global Import Date":                       RUN_DATE_MMDDYYYY,
-        "ICF Global Membership Restart Date":           row.get(COL_REJOIN, "").strip(),
+        "ICF Global Import Date":                       RUN_DATE_ISO,
+        "ICF Global Membership Restart Date":           to_iso_date(row.get(COL_REJOIN, "").strip()),
     }
 
 # Exact column order from sample_membership_import.xlsx (34 columns — all must be present)
