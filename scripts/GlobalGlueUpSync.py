@@ -2,10 +2,36 @@
 """
 GlobalGlueUpSync.py
 ICF Washington State Chapter — GlueUp Member Sync
-Version: 2.3.1
+Version: 2.3.2
 
 CHANGELOG
 ---------
+v2.3.2  2026-08-23
+  - Hardened download_latest_icf_file_from_drive() against picking the
+    wrong file out of the Inbound folder. Root cause of a live Cloud Run
+    failure this same day: a manually-saved copy (opened to inspect the
+    data, then re-saved as a native Google Sheet back into the same
+    Inbound folder) had a newer createdTime than the real file the Make
+    "Get Active Members" scenario had produced hours earlier, so the
+    "most recent file named *activemembers*" query picked the stray copy
+    instead. Drive's get_media() cannot download a native Google Sheet at
+    all (HTTP 403 "Only files with binary content can be downloaded. Use
+    Export with Docs Editors files."), so this surfaced as a hard failure
+    rather than silently processing wrong data. Confirmed via Cloud Run
+    execution history that every normal weekly scheduled run has
+    downloaded cleanly for months -- this was a one-off human mixup, not
+    a bug in what Make normally produces (which is a real binary file).
+    Two-layer fix: (1) the Drive query itself now excludes
+    mimeType='application/vnd.google-apps.spreadsheet', so a stray native
+    -Sheet leftover is skipped automatically rather than winning the
+    "most recent" sort -- this is the actual fix for what happened today;
+    (2) as defense-in-depth, if a native Sheet is ever still selected for
+    some other reason, export_media(mimeType="text/csv") is used instead
+    of get_media(), so it downloads correctly rather than failing outright.
+    NOTE: export_media() only exports the sheet's first/active tab --
+    load_csv()'s existing required-column check will hard-fail loudly
+    (not silently process bad data) if that's ever wrong.
+
 v2.3.1  2026-08-23
   - All Contact-scoped "ICF Global *" date fields are now written as ISO
     (YYYY-MM-DD) instead of MM/DD/YYYY, via a new to_iso_date() helper used
@@ -180,7 +206,7 @@ except ImportError:
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-SCRIPT_VERSION            = "2.3.1"
+SCRIPT_VERSION            = "2.3.2"
 
 GLUEUP_BASE_URL           = "https://api-services.glueup.com"
 GLUEUP_ORG_ID             = "7912"
@@ -371,11 +397,12 @@ def download_latest_icf_file_from_drive():
         f"'{DRIVE_INBOUND_FOLDER_ID}' in parents "
         f"and name contains 'activemembers' "
         f"and mimeType != 'application/vnd.google-apps.folder' "
+        f"and mimeType != 'application/vnd.google-apps.spreadsheet' "
         f"and trashed = false"
     )
     results = service.files().list(
         q=query,
-        fields="files(id, name, createdTime)",
+        fields="files(id, name, createdTime, mimeType)",
         orderBy="createdTime desc",
         pageSize=5,
         supportsAllDrives=True,
@@ -393,14 +420,35 @@ def download_latest_icf_file_from_drive():
     latest    = files[0]
     file_id   = latest["id"]
     file_name = latest["name"]
+    file_mime = latest.get("mimeType", "")
     local_path = f"/tmp/{file_name}"
 
     log(f"  Found: {file_name} (id: {file_id})")
-    log(f"  Downloading to {local_path}...")
 
     import io
     from googleapiclient.http import MediaIoBaseDownload
-    request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
+
+    if file_mime == "application/vnd.google-apps.spreadsheet":
+        # The Make "Get Active Members" scenario drops a native Google Sheet
+        # here, not a real .csv/.xlsx upload (confirmed 2026-08-23 via a live
+        # Cloud Run failure: Drive's get_media() rejects native Docs Editors
+        # files with HTTP 403 "Only files with binary content can be
+        # downloaded. Use Export with Docs Editors files."). Native Sheets
+        # must be exported (server-side converted), not downloaded directly.
+        # NOTE: export_media() exports only the sheet's first/active tab --
+        # if this workbook ever grows a second tab ahead of the data tab,
+        # this would silently pull the wrong tab. load_csv()'s required-
+        # column check below will hard-fail loudly if that ever happens,
+        # rather than processing bad data silently.
+        if not local_path.lower().endswith(".csv"):
+            local_path += ".csv"
+        log(f"  Downloading (exporting Google Sheet as CSV) to {local_path}...")
+        request = service.files().export_media(fileId=file_id, mimeType="text/csv")
+    else:
+        # Already a real binary file (.csv/.xlsx) -- direct download works.
+        log(f"  Downloading to {local_path}...")
+        request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
+
     with open(local_path, "wb") as fh:
         downloader = MediaIoBaseDownload(fh, request)
         done = False
